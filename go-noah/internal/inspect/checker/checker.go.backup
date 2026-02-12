@@ -1,0 +1,394 @@
+package checker
+
+import (
+	"strings"
+
+	"go-noah/internal/inspect/config"
+	"go-noah/internal/inspect/dao"
+	"go-noah/internal/inspect/parser"
+	"go-noah/pkg/global"
+
+	"github.com/pingcap/tidb/pkg/parser/ast"
+	"go.uber.org/zap"
+)
+
+// AuditLevel 审核级别
+type AuditLevel string
+
+const (
+	LevelPass    AuditLevel = "PASS"    // 通过
+	LevelNotice  AuditLevel = "NOTICE"  // 提示
+	LevelWarning AuditLevel = "WARNING" // 警告
+	LevelError   AuditLevel = "ERROR"   // 错误
+)
+
+// AuditResult 单条SQL审核结果
+type AuditResult struct {
+	SQL           string     `json:"sql"`            // 原始SQL
+	Type          string     `json:"type"`           // SQL类型
+	Level         AuditLevel `json:"level"`          // 审核级别
+	AffectedRows  int64      `json:"affected_rows"`  // 影响行数
+	Messages      []string   `json:"messages"`       // 审核信息
+	Summary       []string   `json:"summary"`        // 摘要（兼容原接口）
+	FixSuggestion string     `json:"fix_suggestion"` // 修复建议
+}
+
+// Checker SQL审核器
+type Checker struct {
+	Params     *config.InspectParams // 审核参数
+	DBType     string                // 数据库类型
+	Results    []*AuditResult        // 审核结果
+	DBHost     string                // 数据库主机
+	DBPort     int                   // 数据库端口
+	DBUser     string                // 数据库用户
+	DBPassword string                // 数据库密码
+	DBSchema   string                // 数据库名
+}
+
+// NewChecker 创建审核器
+func NewChecker(params *config.InspectParams, dbType string) *Checker {
+	if params == nil {
+		params = config.DefaultInspectParams()
+	}
+	return &Checker{
+		Params:  params,
+		DBType:  dbType,
+		Results: make([]*AuditResult, 0),
+	}
+}
+
+// SetDBInfo 设置数据库连接信息
+func (c *Checker) SetDBInfo(host string, port int, user, password, schema string) {
+	c.DBHost = host
+	c.DBPort = port
+	c.DBUser = user
+	c.DBPassword = password
+	c.DBSchema = schema
+}
+
+// Check 执行审核
+func (c *Checker) Check(sqlText string) ([]*AuditResult, error) {
+	// 解析SQL
+	audit, _, err := parser.ParseSQL(sqlText)
+	if err != nil {
+		return nil, err
+	}
+
+	// 遍历每条语句进行审核
+	for _, stmt := range audit.TiStmt {
+		result := c.checkStmt(stmt)
+		c.Results = append(c.Results, result)
+	}
+
+	return c.Results, nil
+}
+
+// checkStmt 审核单条语句
+func (c *Checker) checkStmt(stmt ast.StmtNode) *AuditResult {
+	result := &AuditResult{
+		SQL:      stmt.Text(),
+		Type:     parser.GetStatementType(stmt),
+		Level:    LevelPass,
+		Messages: make([]string, 0),
+		Summary:  make([]string, 0),
+	}
+
+	// 根据语句类型执行不同的审核规则
+	switch s := stmt.(type) {
+	case *ast.CreateTableStmt:
+		c.checkCreateTable(s, result)
+	case *ast.AlterTableStmt:
+		c.checkAlterTable(s, result)
+	case *ast.DropTableStmt:
+		c.checkDropTable(s, result)
+	case *ast.TruncateTableStmt:
+		c.checkTruncateTable(s, result)
+	case *ast.InsertStmt:
+		c.checkInsert(s, result)
+	case *ast.UpdateStmt:
+		c.checkUpdate(s, result)
+	case *ast.DeleteStmt:
+		c.checkDelete(s, result)
+	case *ast.SelectStmt:
+		c.checkSelect(s, result)
+	}
+
+	// 将 Messages 同步到 Summary（兼容原接口）
+	result.Summary = append(result.Summary, result.Messages...)
+
+	return result
+}
+
+// checkCreateTable 审核CREATE TABLE语句
+func (c *Checker) checkCreateTable(stmt *ast.CreateTableStmt, result *AuditResult) {
+	// 检查表名长度
+	tableName := stmt.Table.Name.String()
+	if len(tableName) > c.Params.MAX_TABLE_NAME_LENGTH {
+		result.Level = LevelError
+		result.Messages = append(result.Messages, "表名长度超过限制")
+	}
+
+	// 检查是否有主键
+	if c.Params.CHECK_TABLE_PRIMARY_KEY {
+		hasPrimaryKey := false
+		for _, constraint := range stmt.Constraints {
+			if constraint.Tp == ast.ConstraintPrimaryKey {
+				hasPrimaryKey = true
+				break
+			}
+		}
+		if !hasPrimaryKey {
+			result.Level = LevelError
+			result.Messages = append(result.Messages, "表必须有主键")
+		}
+	}
+
+	// 检查表注释
+	if c.Params.CHECK_TABLE_COMMENT {
+		hasComment := false
+		for _, opt := range stmt.Options {
+			if opt.Tp == ast.TableOptionComment {
+				hasComment = true
+				if len(opt.StrValue) > c.Params.TABLE_COMMENT_LENGTH {
+					result.Level = LevelWarning
+					result.Messages = append(result.Messages, "表注释长度超过限制")
+				}
+				break
+			}
+		}
+		if !hasComment {
+			result.Level = LevelWarning
+			result.Messages = append(result.Messages, "建议添加表注释")
+		}
+	}
+
+	// 检查列注释
+	if c.Params.CHECK_COLUMN_COMMENT {
+		for _, col := range stmt.Cols {
+			hasColComment := false
+			for _, opt := range col.Options {
+				if opt.Tp == ast.ColumnOptionComment {
+					hasColComment = true
+					break
+				}
+			}
+			if !hasColComment {
+				result.Level = LevelWarning
+				result.Messages = append(result.Messages, "列 "+col.Name.Name.String()+" 建议添加注释")
+			}
+		}
+	}
+
+	if len(result.Messages) == 0 {
+		result.Messages = append(result.Messages, "审核通过")
+	}
+}
+
+// checkAlterTable 审核ALTER TABLE语句
+func (c *Checker) checkAlterTable(stmt *ast.AlterTableStmt, result *AuditResult) {
+	// 检查表是否存在（需要数据库连接信息）
+	tableName := stmt.Table.Name.String()
+	// 优先使用 SQL 中指定的数据库名，否则使用请求参数中的 schema
+	schema := stmt.Table.Schema.String()
+	if schema == "" {
+		schema = c.DBSchema
+	}
+
+	// 打印数据库连接信息（调试用）
+	global.Logger.Info("表存在性检查",
+		zap.String("table", tableName),
+		zap.String("schema", schema),
+		zap.String("db_host", c.DBHost),
+		zap.Int("db_port", c.DBPort),
+		zap.String("db_user", c.DBUser),
+		zap.String("db_password", "***"), // 不打印真实密码
+		zap.String("db_schema_param", c.DBSchema),
+	)
+
+	// 如果数据库连接信息完整，检查表是否存在
+	// 注意：即使 req.Schema 为空，如果 SQL 中指定了数据库名，也应该检查
+	if c.DBHost != "" && schema != "" {
+		db := &dao.DB{
+			User:     c.DBUser,
+			Password: c.DBPassword,
+			Host:     c.DBHost,
+			Port:     c.DBPort,
+			Database: schema,
+		}
+
+		global.Logger.Info("开始检查表是否存在",
+			zap.String("host", c.DBHost),
+			zap.Int("port", c.DBPort),
+			zap.String("user", c.DBUser),
+			zap.String("password", "***"), // 不打印真实密码
+			zap.String("database", schema),
+			zap.String("table", tableName),
+		)
+
+		msg, err := db.CheckIfTableExists(tableName)
+		if err != nil {
+			global.Logger.Error("表存在性检查失败",
+				zap.Error(err),
+				zap.String("msg", msg),
+				zap.String("host", c.DBHost),
+				zap.Int("port", c.DBPort),
+				zap.String("user", c.DBUser),
+				zap.String("password", "***"), // 不打印真实密码
+				zap.String("database", schema),
+				zap.String("table", tableName),
+			)
+			// 检查是否是表不存在或数据库不存在的错误（msg 包含"不存在"）
+			if msg != "" && strings.Contains(msg, "不存在") {
+				result.Level = LevelError
+				result.Messages = append(result.Messages, msg)
+				result.Summary = append(result.Summary, msg)
+				return // 表或数据库不存在，跳过后续检查
+			}
+			// 连接失败等错误，记录到日志但不阻止审核继续（静默失败）
+			// 注意：这里不添加错误到 result，因为连接失败不应该阻止审核
+		} else if msg != "" {
+			global.Logger.Info("表存在性检查结果",
+				zap.String("msg", msg),
+				zap.String("table", tableName),
+				zap.String("schema", schema),
+			)
+			// 表存在（msg 包含"已存在"），继续后续检查
+		}
+	} else {
+		global.Logger.Warn("跳过表存在性检查，数据库连接信息不完整",
+			zap.String("db_host", c.DBHost),
+			zap.String("schema", schema),
+			zap.String("table", tableName),
+		)
+	}
+
+	for _, spec := range stmt.Specs {
+		switch spec.Tp {
+		case ast.AlterTableDropColumn:
+			if !c.Params.ENABLE_DROP_COLS {
+				result.Level = LevelError
+				result.Messages = append(result.Messages, "禁止DROP列操作")
+			}
+		case ast.AlterTableDropIndex:
+			if !c.Params.ENABLE_DROP_INDEXES {
+				result.Level = LevelError
+				result.Messages = append(result.Messages, "禁止DROP索引操作")
+			}
+		case ast.AlterTableDropPrimaryKey:
+			if !c.Params.ENABLE_DROP_PRIMARYKEY {
+				result.Level = LevelError
+				result.Messages = append(result.Messages, "禁止DROP主键操作")
+			}
+		case ast.AlterTableRenameTable:
+			if !c.Params.ENABLE_RENAME_TABLE_NAME {
+				result.Level = LevelError
+				result.Messages = append(result.Messages, "禁止RENAME表名操作")
+			}
+		}
+	}
+
+	if len(result.Messages) == 0 {
+		result.Messages = append(result.Messages, "审核通过")
+	}
+}
+
+// checkDropTable 审核DROP TABLE语句
+func (c *Checker) checkDropTable(stmt *ast.DropTableStmt, result *AuditResult) {
+	if !c.Params.ENABLE_DROP_TABLE {
+		result.Level = LevelError
+		result.Messages = append(result.Messages, "禁止DROP TABLE操作")
+	} else {
+		result.Messages = append(result.Messages, "审核通过")
+	}
+}
+
+// checkTruncateTable 审核TRUNCATE TABLE语句
+func (c *Checker) checkTruncateTable(stmt *ast.TruncateTableStmt, result *AuditResult) {
+	if !c.Params.ENABLE_TRUNCATE_TABLE {
+		result.Level = LevelError
+		result.Messages = append(result.Messages, "禁止TRUNCATE TABLE操作")
+	} else {
+		result.Messages = append(result.Messages, "审核通过")
+	}
+}
+
+// checkInsert 审核INSERT语句
+func (c *Checker) checkInsert(stmt *ast.InsertStmt, result *AuditResult) {
+	// 检查INSERT INTO SELECT
+	if c.Params.DISABLE_INSERT_INTO_SELECT && stmt.Select != nil {
+		result.Level = LevelError
+		result.Messages = append(result.Messages, "禁止INSERT INTO SELECT语法")
+	}
+
+	// 检查ON DUPLICATE
+	if c.Params.DISABLE_ON_DUPLICATE && len(stmt.OnDuplicate) > 0 {
+		result.Level = LevelError
+		result.Messages = append(result.Messages, "禁止ON DUPLICATE KEY UPDATE语法")
+	}
+
+	// 检查插入行数
+	if stmt.Lists != nil && len(stmt.Lists) > c.Params.MAX_INSERT_ROWS {
+		result.Level = LevelWarning
+		result.Messages = append(result.Messages, "INSERT语句行数超过限制")
+	}
+
+	if len(result.Messages) == 0 {
+		result.Messages = append(result.Messages, "审核通过")
+	}
+}
+
+// checkUpdate 审核UPDATE语句
+func (c *Checker) checkUpdate(stmt *ast.UpdateStmt, result *AuditResult) {
+	// 检查WHERE条件
+	if c.Params.DML_MUST_HAVE_WHERE && stmt.Where == nil {
+		result.Level = LevelError
+		result.Messages = append(result.Messages, "UPDATE语句必须有WHERE条件")
+	}
+
+	// 检查LIMIT
+	if c.Params.DML_DISABLE_LIMIT && stmt.Limit != nil {
+		result.Level = LevelWarning
+		result.Messages = append(result.Messages, "UPDATE语句中不建议使用LIMIT")
+	}
+
+	// 检查ORDER BY
+	if c.Params.DML_DISABLE_ORDERBY && stmt.Order != nil {
+		result.Level = LevelWarning
+		result.Messages = append(result.Messages, "UPDATE语句中不建议使用ORDER BY")
+	}
+
+	if len(result.Messages) == 0 {
+		result.Messages = append(result.Messages, "审核通过")
+	}
+}
+
+// checkDelete 审核DELETE语句
+func (c *Checker) checkDelete(stmt *ast.DeleteStmt, result *AuditResult) {
+	// 检查WHERE条件
+	if c.Params.DML_MUST_HAVE_WHERE && stmt.Where == nil {
+		result.Level = LevelError
+		result.Messages = append(result.Messages, "DELETE语句必须有WHERE条件")
+	}
+
+	// 检查LIMIT
+	if c.Params.DML_DISABLE_LIMIT && stmt.Limit != nil {
+		result.Level = LevelWarning
+		result.Messages = append(result.Messages, "DELETE语句中不建议使用LIMIT")
+	}
+
+	// 检查ORDER BY
+	if c.Params.DML_DISABLE_ORDERBY && stmt.Order != nil {
+		result.Level = LevelWarning
+		result.Messages = append(result.Messages, "DELETE语句中不建议使用ORDER BY")
+	}
+
+	if len(result.Messages) == 0 {
+		result.Messages = append(result.Messages, "审核通过")
+	}
+}
+
+// checkSelect 审核SELECT语句
+func (c *Checker) checkSelect(stmt *ast.SelectStmt, result *AuditResult) {
+	// SELECT语句通常用于查询，审核规则较少
+	result.Messages = append(result.Messages, "审核通过")
+}

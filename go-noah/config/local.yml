@@ -1,0 +1,96 @@
+env: local
+http:
+  #  host: 0.0.0.0
+  host: 127.0.0.1
+  port: 8000
+security:
+  api_sign:
+    app_key: 123456
+    app_security: 123456
+  jwt:
+    key: QQYnRFerJTSEcrfB89fw8prOaObmrch8
+data:
+  db:
+  #  user:
+  #    driver: sqlite
+  #    dsn: storage/nunu-test.db?_busy_timeout=5000
+    user:
+      driver: mysql
+      dsn: root:qynfqepwq@tcp(127.0.0.1:3306)/go_noah?charset=utf8mb4&parseTime=True&loc=Local
+  #    user:
+  #      driver: postgres
+  #      dsn: host=localhost user=gorm password=gorm dbname=gorm port=9920 sslmode=disable TimeZone=Asia/Shanghai
+  redis:
+    addr: 127.0.0.1:6379
+    db: 0
+    read_timeout: 0.2s
+    write_timeout: 0.2s
+
+log:
+  log_level: debug
+  encoding: console           # json or console
+  log_file_name: "./storage/logs/server.log"
+  max_backups: 30
+  max_age: 7
+  max_size: 1024
+  compress: true
+
+# LDAP 配置（从 goInsight 迁移）
+ldap:
+  enable: true               # 是否启用 LDAP 认证
+  host: 192.168.100.51       # LDAP 服务器地址
+  port: 389                  # LDAP 端口（389 或 636 for SSL）
+  use_ssl: false             # 是否使用 SSL/TLS
+  base_dn: "dc=qixiangyun,dc=com"  # 基础 DN
+  bind_dn: "cn=admin,dc=qixiangyun,dc=com"  # 管理员绑定 DN（用于搜索用户）
+  bind_pass: "qxy906906"     # 管理员密码
+  user_filter: "(&(objectClass=inetOrgPerson)(uid=%s))"  # 用户搜索过滤器，%s 会被用户名替换
+  attributes:
+    nickname: "sn"           # 昵称属性名
+    email: "mail"           # 邮箱属性名
+    mobile: "mobile"        # 手机号属性名
+
+# gh-ost 配置（用于在线 DDL 变更）
+# https://github.com/github/gh-ost
+ghost:
+  path: "/Users/lee/Downloads/gh-ost"  # Gh-ost工具路径
+  args:                                 # Gh-ost工具参数列表
+    - "--allow-on-master"
+    - "--assume-rbr"
+    - "--initially-drop-ghost-table"
+    - "--initially-drop-old-table"
+    - "-initially-drop-socket-file"
+    - "-exact-rowcount"
+    - "--approve-renamed-columns"
+    - "--concurrent-rowcount=false"
+    - "--chunk-size=800"
+    - "--attempt-instant-ddl"
+    - "--hooks-path=/tmp"
+
+# DAS (Data Access Service) 配置
+das:
+  max_execution_time: 600000    # 最大执行时间（毫秒），默认 10 分钟
+  default_return_rows: 1000     # 默认返回行数（当 SQL 没有 LIMIT 时自动添加）
+  max_return_rows: 10000        # 最大返回行数（当 SQL 的 LIMIT 超过此值时，自动改写为 LIMIT max_return_rows）
+
+# 定时任务配置
+crontab:
+  sync_db_metas: "*/5 * * * *"  # 每5分钟同步一次远程数据库库表元数据到本地数据库
+  scan_scheduled_orders: "*/30 * * * * *"  # 每30秒扫描一次待注册的定时工单
+
+# 消息通知配置（用于工单消息推送）
+notify:
+  notice_url: "https://noah.qixiangyun.com"  # 工单详情页面的基础URL
+  wechat:
+    enable: false  # 是否启用企业微信通知
+    webhook: ""    # 企业微信机器人Webhook地址
+  dingtalk:
+    enable: true  # 是否启用钉钉通知
+    webhook: "https://oapi.dingtalk.com/robot/send?access_token=0a92f07769ec3c3da63676e5b95b607ae678286e080000a09cbbda5ea0ec4a5f"    # 钉钉机器人Webhook地址
+    keywords: ""   # 钉钉关键词（可选）
+  mail:
+    enable: false  # 是否启用邮件通知
+    username: ""   # 发件人邮箱
+    password: ""   # 发件人邮箱密码
+    host: ""       # SMTP服务器地址
+    port: 465      # SMTP端口
