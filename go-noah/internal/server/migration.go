@@ -7,6 +7,7 @@ import (
 	"go-noah/api"
 	"go-noah/internal/model"
 	"go-noah/internal/model/insight"
+	"go-noah/internal/server/source"
 	"go-noah/pkg/log"
 	"go-noah/pkg/sid"
 	"net/http"
@@ -78,6 +79,7 @@ func (m *MigrateServer) Start(ctx context.Context) error {
 		// 新增: 权限管理
 		&insight.DASPermissionTemplate{},
 		&insight.DASRolePermission{},
+		&insight.DASUserPermission{},
 		&insight.OrderRecord{},
 		&insight.OrderTask{},
 		&insight.OrderOpLog{},
@@ -165,6 +167,7 @@ func AutoMigrateTables(db *gorm.DB, logger *log.Logger) error {
 		// 新增: 权限管理
 		&insight.DASPermissionTemplate{},
 		&insight.DASRolePermission{},
+		&insight.DASUserPermission{},
 		&insight.OrderRecord{},
 		&insight.OrderTask{},
 		&insight.OrderOpLog{},
@@ -468,10 +471,26 @@ func (m *MigrateServer) addPermissionForRole(role, resource, action string) {
 	fmt.Printf("为角色 %s 添加权限: %s %s\n", role, resource, action)
 }
 func (m *MigrateServer) initialApisData(ctx context.Context) error {
-	// API 数据现在由 HTTP 服务器启动时自动从 Gin 路由同步
-	// 这里不再需要手动维护 API 列表
-	// 参见 internal/server/http.go 中的 syncRoutesToDB 函数
-	m.log.Info("API数据将由HTTP服务器启动时自动同步")
+	var count int64
+	if err := m.db.Model(&model.Api{}).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		m.log.Info("API表已有数据，跳过种子初始化")
+		return nil
+	}
+	list := source.ApiSeedData
+	if len(list) == 0 {
+		m.log.Info("API种子为空，跳过；可运行 go run ./tools/api-seed-gen -conf config/local.yml 从测试环境生成 api_seed.go")
+		return nil
+	}
+	for _, item := range list {
+		api := model.Api{Group: item.Group, Name: item.Name, Path: item.Path, Method: item.Method}
+		if err := m.db.Create(&api).Error; err != nil {
+			m.log.Warn("插入API种子失败", zap.String("path", item.Path), zap.String("method", item.Method), zap.Error(err))
+		}
+	}
+	m.log.Info("API种子初始化完成", zap.Int("count", len(list)))
 	return nil
 }
 func (m *MigrateServer) initialMenuData(ctx context.Context) error {
@@ -1403,6 +1422,13 @@ func InitializeFlowDefinitionsIfNeeded(db *gorm.DB, logger *log.Logger) error {
 		log: logger,
 	}
 	return migrateServer.initialFlowDefinitions(ctx)
+}
+
+// InitializeApisSeedIfNeeded 服务首次启动时若 api 表为空，则从 source.ApiSeedData（api_seed.go）插入种子数据
+func InitializeApisSeedIfNeeded(db *gorm.DB, logger *log.Logger) error {
+	ctx := context.Background()
+	m := &MigrateServer{db: db, log: logger}
+	return m.initialApisData(ctx)
 }
 
 // InitializeInspectParamsIfNeeded 检查并初始化SQL审核参数（如果不存在则初始化）

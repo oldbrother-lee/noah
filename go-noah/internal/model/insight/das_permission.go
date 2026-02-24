@@ -85,3 +85,20 @@ func (DASRolePermission) TableName() string {
 	return "das_role_permissions"
 }
 
+// ============ 用户权限（与角色权限配置方式一致：object/template，无 rule）============
+
+// DASUserPermission 用户权限，与角色权限同构：权限类型 object/template，无规则
+type DASUserPermission struct {
+	gorm.Model
+	Username       string        `gorm:"type:varchar(128);not null;comment:用户名;index:idx_username" json:"username"`
+	PermissionType PermissionType `gorm:"type:varchar(50);not null;comment:权限类型：object, template" json:"permission_type"`
+	PermissionID   uint          `gorm:"type:bigint unsigned;not null;comment:权限ID（模板ID或对象占位）;index:idx_permission" json:"permission_id"`
+	InstanceID     string        `gorm:"type:varchar(128);default:'';comment:实例ID（permission_type=object时使用）" json:"instance_id,omitempty"`
+	Schema         string        `gorm:"type:varchar(128);default:'';comment:库名（permission_type=object时使用）" json:"schema,omitempty"`
+	Table          string        `gorm:"type:varchar(128);default:'';comment:表名（permission_type=object时使用）" json:"table,omitempty"`
+}
+
+func (DASUserPermission) TableName() string {
+	return "das_user_permissions"
+}
+

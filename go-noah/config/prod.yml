@@ -64,6 +64,13 @@ crontab:
   sync_db_metas: "*/5 * * * *"  # 每5分钟同步一次远程数据库库表元数据到本地数据库
   scan_scheduled_orders: "*/30 * * * * *"  # 每30秒扫描一次待注册的定时工单
 
+# LLM 配置（API 同步 - AI 自动填充）
+llm:
+  enable: true
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key: "2eb8e43816284ef9bbccf1c127a9d31d.hVzV1lvyIbBDW3SD"
+  model: "glm-5"
+
 # 消息通知配置（用于工单消息推送）
 notify:
   notice_url: "https://noah.qixiangyun.com"  # 工单详情页面的基础URL（生产环境需要修改）

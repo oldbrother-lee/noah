@@ -1,12 +1,12 @@
 <script setup lang="tsx">
 import { ref, onMounted } from 'vue';
-import { NButton, NPopconfirm, NCard, NDataTable, NTag, NSpace, NSelect, NInput } from 'naive-ui';
-import { fetchGetUserPermissions, fetchRevokeSchemaPermission } from '@/service/api/das';
+import { NButton, NPopconfirm, NCard, NDataTable, NTag, NSpace, NSelect } from 'naive-ui';
+import type { DataTableColumns } from 'naive-ui';
+import { fetchGetUserPermissionList, fetchDeleteUserPermission } from '@/service/api/das';
 import { fetchGetAdminUsers } from '@/service/api/admin';
 import { useAppStore } from '@/store/modules/app';
-import { useTable } from '@/hooks/common/table';
 import { $t } from '@/locales';
-import PermissionOperateModal from '../modules/permission-operate-modal.vue';
+import UserPermissionOperateModal from '../modules/user-permission-operate-modal.vue';
 import TableHeaderOperation from '@/components/advanced/table-header-operation.vue';
 
 defineOptions({
@@ -14,63 +14,90 @@ defineOptions({
 });
 
 const appStore = useAppStore();
-
-const searchUsername = ref<string>('');
 const selectedUsername = ref<string>('');
-
 const users = ref<Array<{ label: string; value: string }>>([]);
 const showModal = ref(false);
 const checkedRowKeys = ref<(string | number)[]>([]);
+const loading = ref(false);
+const data = ref<Api.Das.UserPermission[]>([]);
 
-const { columns, columnChecks, data, loading, pagination, getData, getDataByPage } = useTable({
-  apiFn: async () => {
-    if (!selectedUsername.value) {
-      return { data: [], pageNum: 1, pageSize: 10, total: 0 };
-    }
-    const res = await fetchGetUserPermissions(selectedUsername.value);
-    const responseData = (res as any)?.data || res;
-    const schemaPerms = responseData?.schema_permissions || [];
-    
-    return {
-      data: schemaPerms.map((item: any, index: number) => ({
-        ...item,
-        index: index + 1
-      })),
-      pageNum: 1,
-      pageSize: schemaPerms.length,
-      total: schemaPerms.length
-    };
+const typeMap: Record<string, { label: string; type: NaiveUI.ThemeColor }> = {
+  object: { label: '直接权限', type: 'info' },
+  template: { label: '权限模板', type: 'success' }
+};
+
+const columns: DataTableColumns<Api.Das.UserPermission> = [
+  { type: 'selection', width: 48 },
+  {
+    key: 'index',
+    title: $t('common.index'),
+    align: 'center',
+    width: 64,
+    render: (_, index) => index + 1
   },
-  columns: () => [
-    { type: 'selection', align: 'center', width: 48 },
-    { key: 'index', title: $t('common.index'), align: 'center', width: 80, render: (_: any, index: number) => index + 1 },
-    { key: 'instance_id', title: $t('page.manage.database.permission.instanceId'), align: 'center', minWidth: 200 },
-    { key: 'schema', title: $t('page.manage.database.permission.schema'), align: 'center', minWidth: 150 },
-    { key: 'created_at', title: $t('page.manage.database.permission.createdAt'), align: 'center', width: 180 },
-    { key: 'updated_at', title: $t('page.manage.database.permission.updatedAt'), align: 'center', width: 180 },
-    {
-      key: 'operate',
-      title: $t('common.operate'),
-      align: 'center',
-      width: 130,
-      render: (row: any) => (
-        <div class="flex-center gap-8px">
-          <NPopconfirm onPositiveClick={() => handleDelete(row.id || row)}>
-            {{
-              default: () => $t('common.confirmDelete'),
-              trigger: () => (
-                <NButton type="error" ghost size="small">
-                  {$t('common.delete')}
-                </NButton>
-              )
-            }}
-          </NPopconfirm>
-        </div>
-      )
+  {
+    key: 'permission_type',
+    title: '权限类型',
+    align: 'center',
+    width: 100,
+    render: row => {
+      const info = typeMap[row.permission_type] || { label: row.permission_type, type: 'default' };
+      return <NTag type={info.type}>{info.label}</NTag>;
     }
-  ],
-  pagination: { pageSize: 10, pageSizes: [10, 20, 50, 100], showQuickJumper: true }
-});
+  },
+  {
+    key: 'template_name',
+    title: '权限模板',
+    align: 'center',
+    width: 150,
+    render: row => (row.permission_type === 'template' ? <span>{(row as any).template_name || `模板ID: ${row.permission_id}`}</span> : <span>-</span>)
+  },
+  {
+    key: 'instance_id',
+    title: $t('page.manage.database.permission.instanceId'),
+    align: 'center',
+    minWidth: 200,
+    render: row => (row.permission_type === 'object' ? <span>{row.instance_id || '-'}</span> : <span>-</span>)
+  },
+  {
+    key: 'schema',
+    title: $t('page.manage.database.permission.schema'),
+    align: 'center',
+    minWidth: 120,
+    render: row => (row.permission_type === 'object' ? <span>{row.schema || '-'}</span> : <span>-</span>)
+  },
+  {
+    key: 'table',
+    title: '表名',
+    align: 'center',
+    minWidth: 120,
+    render: row => (row.permission_type === 'object' ? <span>{row.table || '-'}</span> : <span>-</span>)
+  },
+  {
+    key: 'created_at',
+    title: $t('page.manage.database.permission.createdAt'),
+    align: 'center',
+    width: 180
+  },
+  {
+    key: 'operate',
+    title: $t('common.operate'),
+    align: 'center',
+    width: 100,
+    render: (row: any) => (
+      <NPopconfirm onPositiveClick={() => handleDelete(row)}>
+        {{
+          default: () => $t('common.confirmDelete'),
+          trigger: () => (
+            <NButton type="error" ghost size="small">
+              {$t('common.delete')}
+            </NButton>
+          )
+        }}
+      </NPopconfirm>
+    )
+  }
+];
 
 async function loadUsers() {
   try {
@@ -86,13 +113,27 @@ async function loadUsers() {
   }
 }
 
+async function getData() {
+  if (!selectedUsername.value) {
+    data.value = [];
+    return;
+  }
+  loading.value = true;
+  try {
+    const res = await fetchGetUserPermissionList(selectedUsername.value);
+    const list = (res as any)?.data ?? res;
+    data.value = Array.isArray(list) ? list : [];
+  } catch (e) {
+    console.error(e);
+  } finally {
+    loading.value = false;
+  }
+}
+
 function handleUserChange(value: string) {
   selectedUsername.value = value;
-  if (value) {
-    getData();
-  } else {
-    data.value = [];
-  }
+  if (value) getData();
+  else data.value = [];
 }
 
 function handleAdd() {
@@ -104,16 +145,17 @@ function handleAdd() {
 }
 
 async function handleDelete(row: any) {
-  if (!selectedUsername.value) {
+  const id = row.id ?? row.ID;
+  if (!id) {
+    window.$message?.error('无法获取权限ID');
     return;
   }
   try {
-    const id = typeof row === 'object' ? row.id : row;
-    await fetchRevokeSchemaPermission(id);
+    await fetchDeleteUserPermission(id);
     window.$message?.success($t('common.deleteSuccess'));
     await getData();
-  } catch (error: any) {
-    window.$message?.error(error?.message || $t('common.deleteFailed') || '删除失败');
+  } catch (e: any) {
+    window.$message?.error(e?.message || $t('common.deleteFailed') || '删除失败');
   }
 }
 
@@ -152,11 +194,7 @@ onMounted(() => {
             </template>
             {{ $t('page.manage.database.permission.addPermission') }}
           </NButton>
-          <TableHeaderOperation
-            v-model:columns="columnChecks"
-            :loading="loading"
-            @refresh="getData"
-          />
+          <TableHeaderOperation :loading="loading" @refresh="getData" />
         </NSpace>
       </template>
       <NDataTable
@@ -167,14 +205,12 @@ onMounted(() => {
         :flex-height="!appStore.isMobile"
         :scroll-x="1200"
         :loading="loading"
-        remote
-        :row-key="(row: any) => row.id || `${row.instance_id}_${row.schema}`"
-        :pagination="pagination"
+        :row-key="(row: any) => row.id ?? row.ID"
         class="sm:h-full"
       />
-      <PermissionOperateModal
+      <UserPermissionOperateModal
         v-model:visible="showModal"
-        :username="selectedUsername"
+        :username="selectedUsername || ''"
         @submitted="handleModalSuccess"
       />
     </NCard>
@@ -182,4 +218,3 @@ onMounted(() => {
 </template>
 
 <style scoped></style>
-

@@ -66,4 +66,3 @@ func NewHTTPServer(
 
 	return s
 }
-

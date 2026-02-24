@@ -2,9 +2,9 @@
 import { computed, ref, watch, onMounted } from 'vue';
 import { NModal, NForm, NFormItem, NInput, NButton, NSpace, NSelect, NDataTable } from 'naive-ui';
 import { jsonClone } from '@sa/utils';
-import { fetchGrantSchemaPermission, fetchGrantTablePermission, fetchTables } from '@/service/api/das';
+import { fetchGrantSchemaPermission, fetchGrantTablePermission } from '@/service/api/das';
 import { fetchGetDBConfigs } from '@/service/api/admin';
-import { fetchOrdersSchemas } from '@/service/api/orders';
+import { fetchOrdersSchemas, fetchOrderTables } from '@/service/api/orders';
 import { useFormRules, useNaiveForm } from '@/hooks/common/form';
 import { $t } from '@/locales';
 
@@ -132,7 +132,7 @@ async function loadTables() {
   
   tableLoading.value = true;
   try {
-    const res = await fetchTables({
+    const res = await fetchOrderTables({
       instance_id: model.value.instance_id,
       schema: model.value.schema
     });

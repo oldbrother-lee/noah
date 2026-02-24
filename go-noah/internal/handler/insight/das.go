@@ -199,6 +199,7 @@ func (h *DASHandler) ExecuteQuery(c *gin.Context) {
 	audit, warns, err := parser.ParseSQL(req.SQLText)
 	if err == nil && len(audit.TiStmt) > 0 {
 		// 只处理 SELECT 语句和 UNION 语句
+		stmtLoop:
 		for _, stmt := range audit.TiStmt {
 			switch stmt.(type) {
 			case *ast.SelectStmt, *ast.SetOprStmt:
@@ -208,7 +209,7 @@ func (h *DASHandler) ExecuteQuery(c *gin.Context) {
 					DbType:    string(config.DbType),
 				}
 				rewriteSQL = rewrite.Run()
-				break // 只处理第一个 SELECT/UNION 语句
+				break stmtLoop // 只处理第一个 SELECT/UNION 语句
 			}
 		}
 		// 如果有警告但不影响解析，继续执行
@@ -684,26 +685,21 @@ type GrantTablePermissionRequest struct {
 // @Security Bearer
 // @Accept json
 // @Produce json
-// @Param username query string false "用户名（可选，不传则使用当前登录用户）"
 // @Param instance_id query string false "实例ID（可选，用于过滤）"
 // @Param schema query string false "库名（可选，用于过滤）"
 // @Success 200 {object} api.Response
 // @Router /api/v1/insight/das/permissions [get]
 func (h *DASHandler) GetUserPermissions(c *gin.Context) {
-	// 获取用户名：优先使用查询参数，否则使用当前登录用户
-	username := c.Query("username")
-	if username == "" {
-		userId := handler.GetUserIdFromCtx(c)
-		if userId == 0 {
-			api.HandleError(c, http.StatusUnauthorized, api.ErrUnauthorized, nil)
-			return
-		}
-		var err error
-		username, err = h.getUsernameByID(c, userId)
-		if err != nil {
-			api.HandleError(c, http.StatusInternalServerError, err, nil)
-			return
-		}
+	// 仅使用当前登录用户，不允许传 username，避免越权查询他人权限
+	userId := handler.GetUserIdFromCtx(c)
+	if userId == 0 {
+		api.HandleError(c, http.StatusUnauthorized, api.ErrUnauthorized, nil)
+		return
+	}
+	username, err := h.getUsernameByID(c, userId)
+	if err != nil {
+		api.HandleError(c, http.StatusInternalServerError, err, nil)
+		return
 	}
 
 	// 获取过滤参数
@@ -1064,20 +1060,111 @@ func (h *DASHandler) DeleteRolePermission(c *gin.Context) {
 	api.HandleSuccess(c, nil)
 }
 
-// GetUserEffectivePermissions 获取用户实际生效的权限
+// GetUserEffectivePermissions 获取当前用户实际生效的权限（不接收 username，防越权）
 func (h *DASHandler) GetUserEffectivePermissions(c *gin.Context) {
-	username := c.Query("username")
-	if username == "" {
-		api.HandleError(c, http.StatusBadRequest, fmt.Errorf("username is required"), nil)
+	userId := handler.GetUserIdFromCtx(c)
+	if userId == 0 {
+		api.HandleError(c, http.StatusUnauthorized, api.ErrUnauthorized, nil)
 		return
 	}
-
+	username, err := h.getUsernameByID(c, userId)
+	if err != nil {
+		api.HandleError(c, http.StatusInternalServerError, err, nil)
+		return
+	}
 	perms, err := service.InsightServiceApp.GetUserEffectivePermissions(c.Request.Context(), username)
 	if err != nil {
 		api.HandleError(c, http.StatusInternalServerError, err, nil)
 		return
 	}
 	api.HandleSuccess(c, perms)
+}
+
+// ============ 用户权限管理（与角色权限同构：object/template，无 rule）===========
+
+// GetUserPermissionList 按用户名获取用户权限列表（与角色权限同结构，供管理端「用户权限」Tab 使用）
+func (h *DASHandler) GetUserPermissionList(c *gin.Context) {
+	username := c.Query("username")
+	if username == "" {
+		api.HandleError(c, http.StatusBadRequest, errors.New("username is required"), nil)
+		return
+	}
+	list, err := service.InsightServiceApp.GetUserPermissions(c.Request.Context(), username)
+	if err != nil {
+		api.HandleError(c, http.StatusInternalServerError, err, nil)
+		return
+	}
+	api.HandleSuccess(c, list)
+}
+
+// CreateUserPermission 创建用户权限（请求体与角色权限一致：permission_type object/template，无 rule）
+func (h *DASHandler) CreateUserPermission(c *gin.Context) {
+	var req struct {
+		Username       string `json:"username" binding:"required"`
+		PermissionType string `json:"permission_type" binding:"required,oneof=object template"`
+		PermissionID   uint   `json:"permission_id"`
+		InstanceID     string `json:"instance_id,omitempty"`
+		Schema         string `json:"schema,omitempty"`
+		Table          string `json:"table,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.HandleError(c, http.StatusBadRequest, err, nil)
+		return
+	}
+	if req.PermissionType == "template" {
+		if req.PermissionID == 0 {
+			api.HandleError(c, http.StatusBadRequest, errors.New("权限模板类型必须提供 permission_id"), nil)
+			return
+		}
+	} else if req.PermissionType == "object" {
+		if req.InstanceID == "" || req.Schema == "" {
+			api.HandleError(c, http.StatusBadRequest, errors.New("直接权限类型必须提供 instance_id 和 schema"), nil)
+			return
+		}
+		if err := h.validateInstanceForPermission(c.Request.Context(), req.InstanceID); err != nil {
+			api.HandleError(c, http.StatusBadRequest, err, nil)
+			return
+		}
+		if req.PermissionID == 0 {
+			hash := md5.Sum([]byte(req.InstanceID + ":" + req.Schema))
+			var hashValue uint64
+			for i := 0; i < 8; i++ {
+				hashValue = hashValue<<8 | uint64(hash[i])
+			}
+			req.PermissionID = uint(hashValue % 1000000000)
+			if req.PermissionID == 0 {
+				req.PermissionID = 1
+			}
+		}
+	}
+	perm := &insight.DASUserPermission{
+		Username:       req.Username,
+		PermissionType: insight.PermissionType(req.PermissionType),
+		PermissionID:   req.PermissionID,
+		InstanceID:     req.InstanceID,
+		Schema:         req.Schema,
+		Table:          req.Table,
+	}
+	if err := service.InsightServiceApp.CreateUserPermission(c.Request.Context(), perm); err != nil {
+		api.HandleError(c, http.StatusInternalServerError, err, nil)
+		return
+	}
+	api.HandleSuccess(c, perm)
+}
+
+// DeleteUserPermission 删除用户权限
+func (h *DASHandler) DeleteUserPermission(c *gin.Context) {
+	id := c.Param("id")
+	var permID uint
+	if _, err := fmt.Sscanf(id, "%d", &permID); err != nil {
+		api.HandleError(c, http.StatusBadRequest, err, nil)
+		return
+	}
+	if err := service.InsightServiceApp.DeleteUserPermission(c.Request.Context(), permID); err != nil {
+		api.HandleError(c, http.StatusInternalServerError, err, nil)
+		return
+	}
+	api.HandleSuccess(c, nil)
 }
 
 // GrantSchemaPermission 授权Schema权限

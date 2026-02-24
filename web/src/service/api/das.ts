@@ -92,13 +92,13 @@ export function fetchUserGrants(params?: Record<string, any>) {
 }
 
 /**
- * Get user permissions (schema and table)
+ * Get current user permissions (schema and table). 仅返回当前登录用户权限，不传 username 防越权。
  */
-export function fetchGetUserPermissions(username: string) {
+export function fetchGetUserPermissions(params?: { instance_id?: string; schema?: string }) {
   return request<Api.Das.UserPermissionsResponse>({
     url: '/api/v1/insight/das/permissions',
     method: 'get',
-    params: { username }
+    params
   });
 }
 
@@ -412,13 +412,46 @@ export function fetchDeleteRolePermission(id: number) {
   });
 }
 
+// ==================== 用户权限管理（与角色同构：object/template，无 rule）====================
+
 /**
- * Get user effective permissions
+ * Get user permission list (same structure as role permission)
  */
-export function fetchGetUserEffectivePermissions(username: string) {
-  return request<Api.Das.PermissionObject[]>({
-    url: '/api/v1/insight/das/permissions/users',
+export function fetchGetUserPermissionList(username: string) {
+  return request<Api.Das.UserPermission[]>({
+    url: '/api/v1/insight/das/permissions/by-user',
     method: 'get',
     params: { username }
+  });
+}
+
+/**
+ * Create user permission
+ */
+export function fetchCreateUserPermission(data: Api.Das.UserPermissionCreateRequest) {
+  return request<Api.Das.UserPermission>({
+    url: '/api/v1/insight/das/permissions/user',
+    method: 'post',
+    data
+  });
+}
+
+/**
+ * Delete user permission
+ */
+export function fetchDeleteUserPermission(id: number) {
+  return request({
+    url: `/api/v1/insight/das/permissions/user/${id}`,
+    method: 'delete'
+  });
+}
+
+/**
+ * Get current user effective permissions (no username param, 防越权).
+ */
+export function fetchGetUserEffectivePermissions() {
+  return request<Api.Das.PermissionObject[]>({
+    url: '/api/v1/insight/das/permissions/users',
+    method: 'get'
   });
 }

@@ -343,6 +343,28 @@ export function fetchGetUserPermissions() {
 }
 
 /**
+ * Admin: get DAS schema/table permissions for a user (admin only, same shape as DAS permissions)
+ */
+export function fetchGetDASUserPermissionsForAdmin(username: string) {
+  return request<Api.Das.UserPermissionsResponse>({
+    url: '/api/v1/admin/das/user-permissions',
+    method: 'get',
+    params: { username }
+  });
+}
+
+/**
+ * Admin: get user effective permissions (merged role + direct, admin only)
+ */
+export function fetchGetDASUserEffectivePermissionsForAdmin(username: string) {
+  return request<Api.Das.PermissionObject[]>({
+    url: '/api/v1/admin/das/user-effective-permissions',
+    method: 'get',
+    params: { username }
+  });
+}
+
+/**
  * Get role permissions
  */
 export function fetchGetRolePermissions(role: string) {

@@ -2,12 +2,11 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"go-noah/api"
-	"go-noah/internal/model"
-	"go-noah/internal/repository"
-	"go-noah/pkg/global"
-	"go-noah/pkg/ldap"
+	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +14,13 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+
+	"go-noah/api"
+	"go-noah/internal/model"
+	"go-noah/internal/repository"
+	"go-noah/pkg/global"
+	"go-noah/pkg/ldap"
+	"go-noah/pkg/llm"
 )
 
 // AdminService 管理员业务逻辑层
@@ -334,6 +340,8 @@ func (s *AdminService) SyncApi(ctx context.Context) (*api.SyncApiResponse, error
 	for _, ig := range ignores {
 		ignoreSet[ig.Path+"\t"+ig.Method] = true
 	}
+	// 按 path+method 去重：Gin 可能对同一路由返回多条（如多组注册），只保留一条
+	cacheSeen := make(map[string]bool)
 	var cacheApis []api.SyncApiItem
 	for _, r := range ginRoutes {
 		path := r.Path
@@ -349,6 +357,11 @@ func (s *AdminService) SyncApi(ctx context.Context) (*api.SyncApiResponse, error
 		if ignoreSet[path+"\t"+r.Method] {
 			continue
 		}
+		key := path + "\t" + r.Method
+		if cacheSeen[key] {
+			continue
+		}
+		cacheSeen[key] = true
 		// 学 GVA：同步结果不生成名称与分组，由前端必填或 AI 自动填充
 		cacheApis = append(cacheApis, api.SyncApiItem{
 			Path: path, Method: r.Method, Group: "", Name: "",
@@ -411,8 +424,158 @@ func syncApiGroupRules() map[string]string {
 	}
 }
 
-// ApiAiFill 根据 path+method 列表返回建议的 group/name（当前为规则填充，后续可接 LLM）
+var (
+	apiAiFillPathRe   = regexp.MustCompile(`^(/v1/|/route/)[a-zA-Z0-9/:_-]*$`) // 只允许合法路由格式，防止 prompt 注入
+	apiAiFillMethods  = map[string]bool{"GET": true, "POST": true, "PUT": true, "DELETE": true, "PATCH": true}
+	apiAiFillMaxItems = 200 // 单次最多条数，防止滥用
+	apiAiFillMaxPath  = 512 // path 最大长度
+)
+
+// ApiAiFill 根据 path+method 列表返回建议的 group/name；配置 LLM 时优先调用，失败则规则回退
 func (s *AdminService) ApiAiFill(ctx context.Context, req *api.ApiAiFillRequest) ([]api.ApiAiFillItem, error) {
+	if len(req.Items) == 0 {
+		return nil, nil
+	}
+	if len(req.Items) > apiAiFillMaxItems {
+		return nil, fmt.Errorf("单次最多 %d 条", apiAiFillMaxItems)
+	}
+	// 严格校验：只允许合法 path/method，防止通过请求体注入任意内容到 LLM prompt
+	for i, item := range req.Items {
+		path := strings.TrimSpace(item.Path)
+		method := strings.TrimSpace(strings.ToUpper(item.Method))
+		if len(path) > apiAiFillMaxPath || !apiAiFillPathRe.MatchString(path) {
+			return nil, fmt.Errorf("第 %d 条 path 格式非法，仅允许 /v1/ 或 /route/ 开头的路由", i+1)
+		}
+		if !apiAiFillMethods[method] {
+			return nil, fmt.Errorf("第 %d 条 method 非法，仅允许 GET/POST/PUT/DELETE/PATCH", i+1)
+		}
+		req.Items[i].Path = path
+		req.Items[i].Method = method
+	}
+	if global.Conf != nil {
+		enable := global.Conf.GetBool("llm.enable")
+		apiKey := strings.TrimSpace(global.Conf.GetString("llm.api_key"))
+		if apiKey == "" {
+			apiKey = os.Getenv("LLM_API_KEY")
+		}
+		if enable && apiKey != "" {
+			baseURL := strings.TrimSuffix(global.Conf.GetString("llm.base_url"), "/")
+			if baseURL == "" {
+				baseURL = "https://api.openai.com/v1"
+			}
+			modelName := global.Conf.GetString("llm.model")
+			if modelName == "" {
+				modelName = "gpt-3.5-turbo"
+			}
+			global.Logger.Info("API AI 填充: 走 LLM",
+				zap.Int("items", len(req.Items)),
+				zap.String("base_url", baseURL),
+				zap.String("model", modelName))
+			out, err := s.apiAiFillWithLLM(ctx, baseURL, apiKey, modelName, req)
+			if err == nil && len(out) == len(req.Items) {
+				global.Logger.Info("API AI 填充: LLM 成功", zap.Int("filled", len(out)))
+				return out, nil
+			}
+			if err != nil {
+				global.Logger.Warn("API AI 填充: LLM 失败，使用规则回退", zap.Error(err))
+			}
+		} else {
+			global.Logger.Info("API AI 填充: 使用规则填充（未启用或未配置 LLM）", zap.Int("items", len(req.Items)))
+		}
+	} else {
+		global.Logger.Info("API AI 填充: 使用规则填充（无配置）", zap.Int("items", len(req.Items)))
+	}
+	return s.apiAiFillWithRules(req)
+}
+
+func (s *AdminService) apiAiFillWithLLM(ctx context.Context, baseURL, apiKey, modelName string, req *api.ApiAiFillRequest) ([]api.ApiAiFillItem, error) {
+	// 按 path+method 去重后再请求 LLM，避免重复路由导致返回重复且浪费 token
+	seen := make(map[string]struct{})
+	var uniqueItems []api.SyncApiItem
+	for _, item := range req.Items {
+		k := item.Path + "\t" + item.Method
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		uniqueItems = append(uniqueItems, item)
+	}
+	n := len(uniqueItems)
+	global.Logger.Debug("API AI 填充: 调用 LLM Chat", zap.String("base_url", baseURL), zap.String("model", modelName), zap.Int("unique_items", n), zap.Int("total_items", len(req.Items)))
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("以下共 %d 条 HTTP API 路由，请为【每一条】都生成一个 JSON 对象，最终输出一个长度为 %d 的 JSON 数组，不要遗漏、不要合并。\n\n", n, n))
+	b.WriteString("要求：分组(group)用简短中文（如：用户管理、菜单管理、基础API），接口名称(name)用简短中文描述该接口功能。\n")
+	b.WriteString("只输出一个 JSON 数组，不要其他说明。每个元素格式：{\"path\":\"与下面完全一致\", \"method\":\"与下面完全一致\", \"group\":\"分组名\", \"name\":\"接口名称\"}\n\n")
+	b.WriteString("路由列表（path 和 method 必须在输出中原样保留）：\n")
+	var sentLines []string
+	for _, item := range uniqueItems {
+		line := fmt.Sprintf("%s %s", item.Method, item.Path)
+		b.WriteString(line + "\n")
+		sentLines = append(sentLines, line)
+	}
+	global.Logger.Debug("API AI 填充: 发送给 LLM 的路由列表(已去重)", zap.Strings("lines", sentLines))
+	content, err := llm.Chat(ctx, baseURL, apiKey, modelName, b.String())
+	if err != nil {
+		global.Logger.Warn("API AI 填充: LLM Chat 调用失败", zap.Error(err))
+		return nil, err
+	}
+	logContent := content
+	if len(logContent) > 2000 {
+		logContent = logContent[:2000] + "...(truncated)"
+	}
+	global.Logger.Debug("API AI 填充: LLM 返回内容已收到", zap.Int("content_len", len(content)), zap.String("content", logContent))
+	content = strings.TrimSpace(content)
+	if idx := strings.Index(content, "```"); idx >= 0 {
+		if start := strings.Index(content, "["); start >= 0 {
+			content = content[start:]
+		}
+		if end := strings.LastIndex(content, "]"); end >= 0 {
+			content = content[:end+1]
+		}
+	}
+	var raw []struct {
+		Path   string `json:"path"`
+		Method string `json:"method"`
+		Group  string `json:"group"`
+		Name   string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(content), &raw); err != nil {
+		return nil, fmt.Errorf("解析 LLM 返回 JSON 失败: %w", err)
+	}
+	byKey := make(map[string]struct{ Path, Method, Group, Name string })
+	for i := range raw {
+		k := raw[i].Path + "\t" + raw[i].Method
+		byKey[k] = struct{ Path, Method, Group, Name string }{
+			raw[i].Path, raw[i].Method,
+			strings.TrimSpace(raw[i].Group), strings.TrimSpace(raw[i].Name),
+		}
+	}
+	// 按原始 req.Items 顺序输出，重复的 path+method 复用同一填充结果
+	out := make([]api.ApiAiFillItem, 0, len(req.Items))
+	for _, item := range req.Items {
+		k := item.Path + "\t" + item.Method
+		v, ok := byKey[k]
+		if !ok {
+			fallback, _ := s.apiAiFillWithRules(&api.ApiAiFillRequest{Items: []api.SyncApiItem{item}})
+			if len(fallback) > 0 {
+				out = append(out, fallback[0])
+			} else {
+				out = append(out, api.ApiAiFillItem{Path: item.Path, Method: item.Method, Group: "其他", Name: item.Path})
+			}
+			continue
+		}
+		if v.Group == "" {
+			v.Group = "其他"
+		}
+		if v.Name == "" {
+			v.Name = item.Path
+		}
+		out = append(out, api.ApiAiFillItem{Path: v.Path, Method: v.Method, Group: v.Group, Name: v.Name})
+	}
+	return out, nil
+}
+
+func (s *AdminService) apiAiFillWithRules(req *api.ApiAiFillRequest) ([]api.ApiAiFillItem, error) {
 	groupRules := syncApiGroupRules()
 	out := make([]api.ApiAiFillItem, 0, len(req.Items))
 	for _, item := range req.Items {

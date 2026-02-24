@@ -13,9 +13,9 @@ import {
   NDataTable
 } from 'naive-ui';
 import { fetchCreateRolePermission } from '@/service/api/das';
-import { fetchGetPermissionTemplates, fetchTables } from '@/service/api/das';
+import { fetchGetPermissionTemplates } from '@/service/api/das';
 import { fetchGetDBConfigs } from '@/service/api/admin';
-import { fetchOrdersSchemas } from '@/service/api/orders';
+import { fetchOrdersSchemas, fetchOrderTables } from '@/service/api/orders';
 import { useFormRules, useNaiveForm } from '@/hooks/common/form';
 import { $t } from '@/locales';
 
@@ -197,7 +197,7 @@ async function loadTables() {
   
   tableLoading.value = true;
   try {
-    const res = await fetchTables({
+    const res = await fetchOrderTables({
       instance_id: model.value.instance_id,
       schema: model.value.schema
     });

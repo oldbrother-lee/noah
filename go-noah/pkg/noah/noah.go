@@ -35,16 +35,21 @@ func NewServerApp(conf *viper.Viper, logger *log.Logger) (*app.App, func(), erro
 
 	// 使用新的初始化管理器
 	initManager := server.NewInitializerManager(global.DB, logger)
-	
+
 	// 注册所有初始化器
 	server.RegisterAllInitializers(logger, global.Enforcer)
-	
+
 	// 按需初始化基础数据（如果不存在则自动初始化）
 	// 初始化顺序由初始化器的 Order() 方法决定：Role -> User -> Menu -> RBAC
 	ctx := context.Background()
 	if err := initManager.InitializeIfNeeded(ctx); err != nil {
 		logger.Warn("初始化数据失败", zap.Error(err))
 		// 不阻止服务启动，只记录警告
+	}
+
+	// API 种子：若 api 表为空则从 api_seed.go 的 ApiSeedData 插入（首次启动）
+	if err := server.InitializeApisSeedIfNeeded(global.DB, logger); err != nil {
+		logger.Warn("API种子初始化失败", zap.Error(err))
 	}
 
 	// 初始化流程定义（如果不存在则自动初始化）

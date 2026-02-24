@@ -199,6 +199,44 @@ func (h *AdminHandler) GetUserPermissions(ctx *gin.Context) {
 	api.HandleSuccess(ctx, data)
 }
 
+// GetDASUserPermissionsForAdmin 管理员按用户名查询 DAS 库表权限（与 insight/das GetUserPermissions 同格式，仅管理员可调）
+func (h *AdminHandler) GetDASUserPermissionsForAdmin(ctx *gin.Context) {
+	username := ctx.Query("username")
+	if username == "" {
+		api.HandleError(ctx, http.StatusBadRequest, api.ErrBadRequest, nil)
+		return
+	}
+	schemaPerms, err := service.InsightServiceApp.GetUserSchemaPermissions(ctx.Request.Context(), username)
+	if err != nil {
+		api.HandleError(ctx, http.StatusInternalServerError, api.ErrInternalServerError, nil)
+		return
+	}
+	tablePerms, err := service.InsightServiceApp.GetUserTablePermissions(ctx.Request.Context(), username)
+	if err != nil {
+		api.HandleError(ctx, http.StatusInternalServerError, api.ErrInternalServerError, nil)
+		return
+	}
+	api.HandleSuccess(ctx, gin.H{
+		"schema_permissions": schemaPerms,
+		"table_permissions":  tablePerms,
+	})
+}
+
+// GetDASUserEffectivePermissionsForAdmin 管理员按用户名查询该用户实际生效的权限（合并角色与直接授权，仅管理员可调）
+func (h *AdminHandler) GetDASUserEffectivePermissionsForAdmin(ctx *gin.Context) {
+	username := ctx.Query("username")
+	if username == "" {
+		api.HandleError(ctx, http.StatusBadRequest, api.ErrBadRequest, nil)
+		return
+	}
+	perms, err := service.InsightServiceApp.GetUserEffectivePermissions(ctx.Request.Context(), username)
+	if err != nil {
+		api.HandleError(ctx, http.StatusInternalServerError, api.ErrInternalServerError, nil)
+		return
+	}
+	api.HandleSuccess(ctx, perms)
+}
+
 // GetRolePermissions godoc
 // @Summary 获取角色权限
 // @Schemes

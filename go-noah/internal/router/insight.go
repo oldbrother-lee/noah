@@ -65,6 +65,11 @@ func InitInsightRouter(r gin.IRouter, jwt *jwt.JWT, e *casbin.SyncedEnforcer, lo
 			authRouter.POST("/das/permissions/roles", insight.DASHandlerApp.CreateRolePermission)
 			authRouter.DELETE("/das/permissions/roles/:id", insight.DASHandlerApp.DeleteRolePermission)
 
+			// ============ 用户权限管理（与角色同构：object/template，无 rule）============
+			authRouter.GET("/das/permissions/by-user", insight.DASHandlerApp.GetUserPermissionList)
+			authRouter.POST("/das/permissions/user", insight.DASHandlerApp.CreateUserPermission)
+			authRouter.DELETE("/das/permissions/user/:id", insight.DASHandlerApp.DeleteUserPermission)
+
 			// ============ 用户权限查询 ============
 			authRouter.GET("/das/permissions/users", insight.DASHandlerApp.GetUserEffectivePermissions)
 

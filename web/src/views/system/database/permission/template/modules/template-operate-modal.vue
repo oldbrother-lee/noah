@@ -15,11 +15,10 @@ import {
 import { jsonClone } from '@sa/utils';
 import {
   fetchCreatePermissionTemplate,
-  fetchUpdatePermissionTemplate,
-  fetchTables
+  fetchUpdatePermissionTemplate
 } from '@/service/api/das';
 import { fetchGetDBConfigs, fetchGetEnvironments } from '@/service/api/admin';
-import { fetchOrdersSchemas } from '@/service/api/orders';
+import { fetchOrdersSchemas, fetchOrderTables } from '@/service/api/orders';
 import { useFormRules, useNaiveForm } from '@/hooks/common/form';
 import { $t } from '@/locales';
 
@@ -235,7 +234,7 @@ async function loadTables() {
   
   tableLoading.value = true;
   try {
-    const res = await fetchTables({
+    const res = await fetchOrderTables({
       instance_id: selectedInstanceId.value,
       schema: selectedSchema.value
     });

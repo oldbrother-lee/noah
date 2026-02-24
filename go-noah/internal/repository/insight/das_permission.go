@@ -71,6 +71,56 @@ func (r *InsightRepository) BatchCreateRolePermissions(ctx context.Context, perm
 	return r.DB(ctx).Create(&perms).Error
 }
 
+// ============ 用户权限管理（与角色权限同构：object/template，无 rule）============
+
+// GetUserPermissions 获取用户权限列表（新表 das_user_permissions）
+func (r *InsightRepository) GetUserPermissions(ctx context.Context, username string) ([]insight.DASUserPermission, error) {
+	var perms []insight.DASUserPermission
+	if err := r.DB(ctx).Where("username = ?", username).Find(&perms).Error; err != nil {
+		return nil, err
+	}
+	return perms, nil
+}
+
+// CreateUserPermission 创建用户权限
+func (r *InsightRepository) CreateUserPermission(ctx context.Context, perm *insight.DASUserPermission) error {
+	return r.DB(ctx).Create(perm).Error
+}
+
+// DeleteUserPermission 删除用户权限（软删除）
+func (r *InsightRepository) DeleteUserPermission(ctx context.Context, id uint) error {
+	return r.DB(ctx).Delete(&insight.DASUserPermission{}, id).Error
+}
+
+// ExpandUserPermissions 展开用户权限（与角色权限相同逻辑：object 即一条，template 展开）
+func (r *InsightRepository) ExpandUserPermissions(ctx context.Context, username string) ([]insight.PermissionObject, error) {
+	perms, err := r.GetUserPermissions(ctx, username)
+	if err != nil {
+		return nil, err
+	}
+	var result []insight.PermissionObject
+	for _, perm := range perms {
+		switch perm.PermissionType {
+		case insight.PermissionTypeObject:
+			result = append(result, insight.PermissionObject{
+				InstanceID: perm.InstanceID,
+				Schema:     perm.Schema,
+				Table:      perm.Table,
+			})
+		case insight.PermissionTypeTemplate:
+			template, err := r.GetPermissionTemplate(ctx, perm.PermissionID)
+			if err != nil {
+				if err == gorm.ErrRecordNotFound {
+					continue
+				}
+				return nil, err
+			}
+			result = append(result, template.Permissions...)
+		}
+	}
+	return result, nil
+}
+
 // ============ 权限展开和查询 ============
 
 // ExpandRolePermissions 展开角色权限（将模板/组展开为具体权限对象）
@@ -147,15 +197,23 @@ func (r *InsightRepository) GetUserEffectivePermissions(ctx context.Context, use
 		if err != nil {
 			return nil, err
 		}
-
-		// 去重：使用 instance_id + schema + table 作为 key
 		for _, perm := range perms {
 			key := perm.InstanceID + ":" + perm.Schema + ":" + perm.Table
 			permissionMap[key] = perm
 		}
 	}
 
-	// 2. 获取用户直接权限（从 das_user_schema_permissions 表）
+	// 2. 用户权限（与角色同构：object/template，无 rule）
+	userPerms, err := r.ExpandUserPermissions(ctx, username)
+	if err != nil {
+		return nil, err
+	}
+	for _, perm := range userPerms {
+		key := perm.InstanceID + ":" + perm.Schema + ":" + perm.Table
+		permissionMap[key] = perm
+	}
+
+	// 3. 兼容旧数据：用户直接库权限（das_user_schema_permissions）
 	schemaPerms, err := r.GetUserSchemaPermissions(ctx, username)
 	if err != nil {
 		return nil, err
@@ -171,7 +229,7 @@ func (r *InsightRepository) GetUserEffectivePermissions(ctx context.Context, use
 		}
 	}
 
-	// 3. 转换为数组
+	// 4. 转换为数组
 	result := make([]insight.PermissionObject, 0, len(permissionMap))
 	for _, perm := range permissionMap {
 		result = append(result, perm)

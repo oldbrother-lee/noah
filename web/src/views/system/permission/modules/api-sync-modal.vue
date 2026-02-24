@@ -172,16 +172,26 @@ async function handleAiAutoFill() {
   }
   aiFillLoading.value = true;
   try {
-    const list = await fetchApiAiFill({
+    const res = await fetchApiAiFill({
       items: newApisRows.value.map(r => ({ path: r.path, method: r.method }))
     });
-    const arr = Array.isArray(list) ? list : [];
-    newApisRows.value.forEach(row => {
-      const item = arr.find(d => d.path === row.path && d.method === row.method);
+    // 兼容：接口可能返回 data 包装或直接返回数组
+    const arr = Array.isArray(res) ? res : (res as any)?.data ?? [];
+    if (!Array.isArray(arr) || arr.length === 0) {
+      window.$message?.warning('未获取到填充数据');
+      return;
+    }
+    // 用新数组赋值以触发响应式更新，表格才会刷新
+    newApisRows.value = newApisRows.value.map(row => {
+      const item = arr.find((d: Api.Admin.ApiAiFillItem) => d.path === row.path && d.method === row.method);
       if (item) {
-        row.group = item.group || row.group || '其他';
-        row.name = item.name || row.name || '';
+        return {
+          ...row,
+          group: item.group || row.group || '其他',
+          name: item.name || row.name || ''
+        };
       }
+      return row;
     });
     window.$message?.success($t('page.manage.api.aiAutoFillSuccess'));
   } catch (e: any) {

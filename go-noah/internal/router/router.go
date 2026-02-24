@@ -58,6 +58,8 @@ func InitAdminRouter(r gin.IRouter, jwt *jwt.JWT, e *casbin.SyncedEnforcer, logg
 			strictAuthRouter.POST("/admin/user", handler.AdminHandlerApp.AdminUserCreate)
 			strictAuthRouter.DELETE("/admin/user", handler.AdminHandlerApp.AdminUserDelete)
 			strictAuthRouter.GET("/admin/user/permissions", handler.AdminHandlerApp.GetUserPermissions)
+			strictAuthRouter.GET("/admin/das/user-permissions", handler.AdminHandlerApp.GetDASUserPermissionsForAdmin)
+			strictAuthRouter.GET("/admin/das/user-effective-permissions", handler.AdminHandlerApp.GetDASUserEffectivePermissionsForAdmin)
 			strictAuthRouter.GET("/admin/role/permissions", handler.AdminHandlerApp.GetRolePermissions)
 			strictAuthRouter.PUT("/admin/role/permission", handler.AdminHandlerApp.UpdateRolePermission)
 			strictAuthRouter.GET("/admin/roles", handler.AdminHandlerApp.GetRoles)

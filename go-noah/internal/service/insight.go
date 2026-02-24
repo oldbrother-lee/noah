@@ -183,6 +183,20 @@ func (s *InsightService) BatchCreateRolePermissions(ctx context.Context, perms [
 	return s.getRepo().BatchCreateRolePermissions(ctx, perms)
 }
 
+// ============ 用户权限管理（与角色同构：object/template，无 rule）============
+
+func (s *InsightService) GetUserPermissions(ctx context.Context, username string) ([]insight.DASUserPermission, error) {
+	return s.getRepo().GetUserPermissions(ctx, username)
+}
+
+func (s *InsightService) CreateUserPermission(ctx context.Context, perm *insight.DASUserPermission) error {
+	return s.getRepo().CreateUserPermission(ctx, perm)
+}
+
+func (s *InsightService) DeleteUserPermission(ctx context.Context, id uint) error {
+	return s.getRepo().DeleteUserPermission(ctx, id)
+}
+
 // ============ 权限查询 ============
 
 func (s *InsightService) GetUserEffectivePermissions(ctx context.Context, username string) ([]insight.PermissionObject, error) {

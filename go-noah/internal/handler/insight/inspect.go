@@ -75,7 +75,6 @@ func (h *InspectHandler) InspectSQL(c *gin.Context) {
 	}
 
 	// 获取审核参数和数据库配置
-	// 老项目逻辑：先加载全局参数表（合并所有记录），再用实例参数覆盖
 	var params *config.InspectParams
 	var dbConfig *insight.DBConfig
 
@@ -197,7 +196,6 @@ func (h *InspectHandler) InspectSQL(c *gin.Context) {
 		return
 	}
 
-	// 检查审核结果是否有错误（与老服务逻辑一致）
 	// status: 0表示语法检查通过，1表示语法检查不通过
 	status := 0
 	for _, r := range results {
@@ -207,7 +205,6 @@ func (h *InspectHandler) InspectSQL(c *gin.Context) {
 		}
 	}
 
-	// 返回格式与老服务保持一致：{status: 0/1, data: [...]}
 	api.HandleSuccess(c, gin.H{
 		"status": status,
 		"data":   results,

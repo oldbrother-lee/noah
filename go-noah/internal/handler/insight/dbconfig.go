@@ -21,10 +21,10 @@ type DBConfigHandler struct{}
 
 // GetDBConfigsRequest 获取数据库配置列表请求
 type GetDBConfigsRequest struct {
-	UseType     string `form:"use_type"`     // 用途：查询/工单
+	UseType     string `form:"use_type"`    // 用途：查询/工单
 	Environment int    `form:"environment"` // 环境ID
-	ID          int    `form:"id"`           // 环境ID（兼容前端传递的 id 参数）
-	DbType      string `form:"db_type"`      // 数据库类型：MySQL/TiDB
+	ID          int    `form:"id"`          // 环境ID（兼容前端传递的 id 参数）
+	DbType      string `form:"db_type"`     // 数据库类型：MySQL/TiDB
 }
 
 // GetDBConfigs 获取数据库配置列表
@@ -136,7 +136,7 @@ func (h *DBConfigHandler) CreateDBConfig(c *gin.Context) {
 		return
 	}
 
-	// 显式生成 instance_id，与老系统保持一致
+	// 显式生成 instance_id
 	instanceID, err := uuid.NewUUID()
 	if err != nil {
 		api.HandleError(c, http.StatusInternalServerError, err, nil)
@@ -176,15 +176,15 @@ func (h *DBConfigHandler) CreateDBConfig(c *gin.Context) {
 
 // UpdateDBConfigRequest 更新数据库配置请求
 type UpdateDBConfigRequest struct {
-	Hostname        *string                `json:"hostname,omitempty"`
-	Port            *int                   `json:"port,omitempty"`
-	UserName        *string                `json:"user_name,omitempty"`
-	Password        *string                `json:"password,omitempty"`
-	UseType         *string                `json:"use_type,omitempty"`
-	DbType          *string                `json:"db_type,omitempty"`
-	Environment     *int                   `json:"environment,omitempty"`
-	OrganizationKey *string                `json:"organization_key,omitempty"`
-	Remark          *string                `json:"remark,omitempty"`
+	Hostname        *string                 `json:"hostname,omitempty"`
+	Port            *int                    `json:"port,omitempty"`
+	UserName        *string                 `json:"user_name,omitempty"`
+	Password        *string                 `json:"password,omitempty"`
+	UseType         *string                 `json:"use_type,omitempty"`
+	DbType          *string                 `json:"db_type,omitempty"`
+	Environment     *int                    `json:"environment,omitempty"`
+	OrganizationKey *string                 `json:"organization_key,omitempty"`
+	Remark          *string                 `json:"remark,omitempty"`
 	InspectParams   *map[string]interface{} `json:"inspect_params,omitempty"` // 审核参数（JSON对象）
 }
 
@@ -311,4 +311,3 @@ func (h *DBConfigHandler) GetSchemas(c *gin.Context) {
 	}
 	api.HandleSuccess(c, schemas)
 }
-

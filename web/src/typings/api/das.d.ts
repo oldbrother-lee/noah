@@ -258,5 +258,27 @@ declare namespace Api {
       schema?: string;
       table?: string;
     }
+
+    // ==================== 用户权限（与角色同构：object/template，无 rule）====================
+    interface UserPermission {
+      id: number;
+      username: string;
+      permission_type: 'object' | 'template';
+      permission_id: number;
+      instance_id?: string;
+      schema?: string;
+      table?: string;
+      created_at: string;
+      updated_at: string;
+    }
+
+    interface UserPermissionCreateRequest {
+      username: string;
+      permission_type: 'object' | 'template';
+      permission_id: number;
+      instance_id?: string;
+      schema?: string;
+      table?: string;
+    }
   }
 }

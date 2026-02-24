@@ -19,7 +19,12 @@ import { foldGutter, foldKeymap, syntaxHighlighting, defaultHighlightStyle } fro
 import { oneDark } from '@codemirror/theme-one-dark';
 import { autocompletion, completionKeymap } from '@codemirror/autocomplete';
 import { useRouter } from 'vue-router';
-import { ensureVxe } from '@/plugins/vxe';
+// 静态导入 vxe-table，随 DAS 编辑页 chunk 一起加载，避免分包后动态 import 未完成导致表格不渲染
+// 使用 named 导入表格与列组件，在模板中按 PascalCase 使用，避免全局注册时机导致 resolve 失败
+import VxeTableLib, { VxeTable, VxeColumn } from 'vxe-table';
+import VxePcUI from 'vxe-pc-ui';
+import 'vxe-table/lib/style.css';
+import 'vxe-pc-ui/lib/style.css';
 // 使用普通textarea
 
 const { t } = useI18n();
@@ -55,8 +60,12 @@ const leftTableSearch = ref('');
 // 新增：追踪树展开的键集合 & 列分组展开集合
 const expandedKeys = ref<any[]>([]);
 const columnsGroupExpanded = ref<Set<string | number>>(new Set());
-/** VxeTable 按需加载完成后再渲染表格，减轻首屏体积 */
+/** 表格就绪：VXE 在 onMounted 同步注册后为 true */
 const vxeReady = ref(false);
+/** VXE 注册失败时改用 NDataTable 兜底 */
+const useFallbackTable = ref(false);
+
+let vxeInstalled = false;
 
 // 路由跳转：收藏SQL、历史查询
 const router = useRouter();
@@ -2102,8 +2111,16 @@ watch(
 
 onMounted(async () => {
   const instance = getCurrentInstance();
-  if (instance?.appContext?.app) {
-    await ensureVxe(instance.appContext.app);
+  const app = instance?.appContext?.app;
+  if (app && !vxeInstalled) {
+    try {
+      app.use(VxePcUI);
+      app.use(VxeTableLib);
+      vxeInstalled = true;
+    } catch (e) {
+      console.error('VXE 表格注册失败，使用备用表格', e);
+      useFallbackTable.value = true;
+    }
   }
   vxeReady.value = true;
 
@@ -2425,27 +2442,38 @@ onUnmounted(() => {
                         <div v-if="pane.result">
                           <div v-if="getTableColumns(pane).length > 0">
                             <template v-if="vxeReady">
-                          <vxe-table
-                            :data="getPagedTableData(pane)"
-                            border
-                            stripe
-                            :height="appStore.isMobile ? 300 : 400"
-                            :column-config="{ resizable: true }"
-                            :resizable-config="{ showDragTip: false }"
-                            :scroll-y="{ enabled: true, mode: 'wheel' }"
-                            :scroll-x="{ enabled: true }"
-                            :optimization="{ animat: false }"
-                            show-overflow
-                            empty-text="暂无数据"
-                          >
-                              <vxe-column
-                                v-for="col in getVisibleColumns(pane)"
-                                :key="col.key"
-                                :field="col.key"
-                                :title="col.title"
-                                :min-width="col.minWidth || 120"
+                              <VxeTable
+                                v-if="!useFallbackTable"
+                                :data="getPagedTableData(pane)"
+                                border
+                                stripe
+                                :height="appStore.isMobile ? 300 : 400"
+                                :column-config="{ resizable: true }"
+                                :resizable-config="{ showDragTip: false }"
+                                :scroll-y="{ enabled: true, mode: 'wheel' }"
+                                :scroll-x="{ enabled: true }"
+                                :optimization="{ animat: false }"
+                                show-overflow
+                                empty-text="暂无数据"
+                              >
+                                <VxeColumn
+                                  v-for="col in getVisibleColumns(pane)"
+                                  :key="col.key"
+                                  :field="col.key"
+                                  :title="col.title"
+                                  :min-width="col.minWidth || 120"
+                                />
+                              </VxeTable>
+                              <NDataTable
+                                v-else
+                                :columns="getVisibleColumns(pane).map(c => ({ key: c.key, title: c.title, width: c.minWidth || 120, ellipsis: { tooltip: true } }))"
+                                :data="getPagedTableData(pane)"
+                                :max-height="appStore.isMobile ? 300 : 400"
+                                size="small"
+                                bordered
+                                striped
+                                class="das-result-fallback-table"
                               />
-                            </vxe-table>
                             <div class="das-result-meta">
                               <div class="das-result-stat">
                                 <SvgIcon icon="carbon:checkmark" class="text-16px text-#18a058" />
