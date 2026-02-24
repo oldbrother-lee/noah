@@ -506,9 +506,9 @@ func (e *MySQLExecutor) ExecuteDML() (ReturnData, error) {
 	data.AffectedRows = affectedRows
 	data.ExecuteCostTime = executeCostTime
 
-	// 如果影响行数大于0，且成功获取了binlog position，生成回滚SQL
+	// 仅当工单选择“生成回滚”且影响行数>0且能获取 binlog position 时才生成回滚 SQL
 	var rollbackSQL, backupCostTime string
-	if affectedRows > 0 && startFile != "" {
+	if e.Config.GenerateRollback && affectedRows > 0 && startFile != "" {
 		// 获取执行后的binlog position
 		endFile, endPosition, err := mysqlpkg.GetBinlogPos(db)
 		if err != nil {

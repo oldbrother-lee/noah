@@ -77,6 +77,7 @@ type OrderRecord struct {
 	FlowInstanceID      uint             `gorm:"index;comment:'关联流程实例ID'" json:"flow_instance_id"`
 	GhostOkToDropTable  bool             `gorm:"type:tinyint(1);not null;default:0;comment:gh-ost执行成功后自动删除旧表" json:"ghost_ok_to_drop_table"`
 	SchedulerRegistered bool             `gorm:"type:tinyint(1);not null;default:0;comment:定时任务是否已注册到调度器;index" json:"scheduler_registered"`
+	GenerateRollback    *bool            `gorm:"type:tinyint(1);default:1;comment:DML工单是否生成回滚语句(仅DML有效)" json:"generate_rollback"` // 用指针避免 GORM 忽略 false
 }
 
 func (OrderRecord) TableName() string {

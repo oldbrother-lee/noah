@@ -15,6 +15,7 @@ type DBConfig struct {
 	TaskID             string // 任务ID
 	ExportFileFormat   string // 导出文件格式
 	GhostOkToDropTable bool   // gh-ost执行成功后自动删除旧表
+	GenerateRollback   bool   // DML 是否生成回滚语句，仅 DML 有效
 }
 
 // ExportFile 导出文件信息

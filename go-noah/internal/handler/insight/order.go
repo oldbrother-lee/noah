@@ -764,6 +764,7 @@ type CreateOrderRequest struct {
 	ScheduleTime       FlexibleTime `json:"schedule_time"`
 	FixVersion         string       `json:"fix_version"`
 	ExportFileFormat   string       `json:"export_file_format"`
+	GenerateRollback   *bool        `json:"generate_rollback"` // DML工单是否生成回滚语句，默认 true
 }
 
 // CreateOrder 创建工单
@@ -799,6 +800,17 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
+	// DML 工单：仅当明确传 generate_rollback 时使用传值，否则默认 true；非 DML 忽略该字段
+	var generateRollback bool
+	if req.SQLType == "DML" {
+		if req.GenerateRollback != nil {
+			generateRollback = *req.GenerateRollback
+		} else {
+			generateRollback = true // 默认生成回滚语句
+		}
+	} else {
+		generateRollback = true // 非 DML 不使用该字段，占位即可
+	}
 	order := &insight.OrderRecord{
 		Title:              req.Title,
 		Remark:             req.Remark,
@@ -815,6 +827,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		FixVersion:         req.FixVersion,
 		ExportFileFormat:   insight.ExportFileFormat(req.ExportFileFormat),
 		GhostOkToDropTable: false, // 默认false，由审核人在审核时设置
+		GenerateRollback:   &generateRollback,
 	}
 
 	// 转换 JSON 字段
@@ -1589,10 +1602,16 @@ func (h *OrderHandler) ExecuteTask(c *gin.Context) {
 		Msg:      "开始执行任务: " + req.TaskID,
 	})
 
+	// DML 是否生成回滚：nil 视为 true（兼容旧数据），否则用工单配置
+	generateRollback := true
+	if order.GenerateRollback != nil {
+		generateRollback = *order.GenerateRollback
+	}
 	// 创建执行器配置
 	global.Logger.Info("创建执行器配置",
 		zap.String("order_id", order.OrderID.String()),
 		zap.Bool("ghost_ok_to_drop_table", order.GhostOkToDropTable),
+		zap.Bool("generate_rollback", generateRollback),
 		zap.String("sql_type", string(task.SQLType)),
 	)
 	execConfig := &executor.DBConfig{
@@ -1608,6 +1627,7 @@ func (h *OrderHandler) ExecuteTask(c *gin.Context) {
 		TaskID:             task.TaskID.String(),
 		ExportFileFormat:   string(order.ExportFileFormat),
 		GhostOkToDropTable: order.GhostOkToDropTable,
+		GenerateRollback:   generateRollback,
 	}
 
 	// 记录执行开始日志（用于调试）
@@ -1926,10 +1946,16 @@ func (h *OrderHandler) executeAllTasks(c *gin.Context, orderID string, username 
 			// 更新任务状态为执行中
 			_ = service.InsightServiceApp.UpdateTaskProgress(ctx, task.TaskID.String(), insight.TaskProgressExecuting, nil)
 
+			// DML 是否生成回滚：nil 视为 true，否则用工单配置
+			generateRollbackBatch := true
+			if order.GenerateRollback != nil {
+				generateRollbackBatch = *order.GenerateRollback
+			}
 			// 创建执行器配置
 			global.Logger.Info("创建执行器配置（批量执行）",
 				zap.String("order_id", order.OrderID.String()),
 				zap.Bool("ghost_ok_to_drop_table", order.GhostOkToDropTable),
+				zap.Bool("generate_rollback", generateRollbackBatch),
 				zap.String("sql_type", string(task.SQLType)),
 			)
 			execConfig := &executor.DBConfig{
@@ -1945,6 +1971,7 @@ func (h *OrderHandler) executeAllTasks(c *gin.Context, orderID string, username 
 				TaskID:             task.TaskID.String(),
 				ExportFileFormat:   string(order.ExportFileFormat),
 				GhostOkToDropTable: order.GhostOkToDropTable,
+				GenerateRollback:   generateRollbackBatch,
 			}
 
 			// 创建执行器

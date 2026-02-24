@@ -48,6 +48,7 @@ const appStore = useAppStore();
 const sqlType = ref<string>('DDL');
 const pageTitle = computed(() => `提交${sqlType.value}工单`);
 const isExportOrder = computed(() => sqlType.value.toLowerCase() === 'export');
+const isDMLOrder = computed(() => sqlType.value.toUpperCase() === 'DML');
 
 // 表单模型
 interface FormModel {
@@ -65,6 +66,7 @@ interface FormModel {
   cc: string[]; // username list
   content: string;
   scheduleTime?: string | null;
+  generateRollback?: boolean; // DML 是否生成回滚语句，默认 true
 }
 
 const formModel = reactive<FormModel>({
@@ -81,7 +83,8 @@ const formModel = reactive<FormModel>({
   reviewer: [],
   cc: [],
   content: '',
-  scheduleTime: null
+  scheduleTime: null,
+  generateRollback: true // DML 默认生成回滚语句
 });
 
 // 下拉数据源
@@ -807,7 +810,7 @@ async function submitOrder() {
       return;
     }
 
-    const payload = {
+    const payload: Record<string, any> = {
       title: formModel.title,
       remark: formModel.remark,
       is_restrict_access: formModel.isRestrictAccess,
@@ -816,15 +819,18 @@ async function submitOrder() {
       instance_id: formModel.instanceId,
       schema: formModel.schema,
       export_file_format: formModel.exportFileFormat,
-      // 审核人、执行人、复核人、抄送人由流程引擎自动分配，无需传递
       approver: [],
       executor: [],
       reviewer: [],
       cc: [],
       sql_type: sqlType.value,
       content: formModel.content,
-      schedule_time: formModel.scheduleTime // 后端已支持 "yyyy-MM-dd HH:mm:ss" 格式
+      schedule_time: formModel.scheduleTime
     };
+    // DML 工单：明确传是否生成回滚（true/false），避免被序列化省略导致后端收到默认 true）
+    if (sqlType.value.toUpperCase() === 'DML') {
+      payload.generate_rollback = formModel.generateRollback === true;
+    }
 
     const res: any = await fetchCreateOrder(payload as any);
     
@@ -954,6 +960,10 @@ watch(
                       { label: 'CSV', value: 'CSV' }
                     ]"
                   />
+                </NFormItem>
+                <NFormItem v-if="isDMLOrder" label="是否回滚">
+                  <NSwitch v-model:value="formModel.generateRollback" />
+                  <span class="ml-8px text-12px text-gray-500">开启后将生成回滚语句，便于误操作后恢复</span>
                 </NFormItem>
                 <NFormItem label="定时执行">
                   <NDatePicker
