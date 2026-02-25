@@ -114,7 +114,6 @@ declare namespace Api {
       order_id: string;
       status: 'pass' | 'reject';
       msg?: string;
-      ghost_ok_to_drop_table?: boolean;
     }
 
     interface FeedbackOrderRequest {
@@ -160,11 +159,15 @@ declare namespace Api {
     }
 
     interface ExecuteTaskRequest {
-      taskId: number;
+      task_id: string;
+      /** DDL 执行时：gh-ost 成功后是否自动删除旧表 */
+      ghost_ok_to_drop_table?: boolean;
     }
 
     interface ExecuteAllTasksRequest {
-      orderId: number;
+      order_id: string;
+      /** DDL 执行时：gh-ost 成功后是否自动删除旧表 */
+      ghost_ok_to_drop_table?: boolean;
     }
 
     interface TaskResult {

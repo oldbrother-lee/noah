@@ -171,8 +171,9 @@ export const useAuthStore = defineStore(SetupStoreId.Auth, () => {
       // update store
       const backendInfo = info as any;
       Object.assign(userInfo, {
-        userId: String(backendInfo.uid),
-        userName: backendInfo.nick_name || backendInfo.username,
+        userId: String(backendInfo.uid ?? backendInfo.id),
+        userName: backendInfo.nick_name || backendInfo.nickname || backendInfo.username,
+        username: backendInfo.username ?? '',
         roles: [backendInfo.role || 'user'],
         buttons: []
       });

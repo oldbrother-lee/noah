@@ -13,6 +13,8 @@ declare namespace Api {
     interface UserInfo {
       userId: string;
       userName: string;
+      /** 登录用户名，与工单执行人列表中的值一致，用于权限判断 */
+      username?: string;
       roles: string[];
       buttons: string[];
     }

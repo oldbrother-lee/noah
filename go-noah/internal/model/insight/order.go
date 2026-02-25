@@ -17,6 +17,14 @@ const (
 	SQLTypeExport SQLType = "EXPORT"
 )
 
+// DDLExecutionMode DDL 执行方式：gh-ost 或直接 ALTER，提交时用户必选，单工单仅一种
+type DDLExecutionMode string
+
+const (
+	DDLExecutionModeGhost  DDLExecutionMode = "ghost"  // gh-ost 在线变更，表需有主键或唯一键
+	DDLExecutionModeDirect DDLExecutionMode = "direct" // 直接 ALTER，可能锁表
+)
+
 // Progress 工单进度
 type Progress string
 
@@ -77,7 +85,8 @@ type OrderRecord struct {
 	FlowInstanceID      uint             `gorm:"index;comment:'关联流程实例ID'" json:"flow_instance_id"`
 	GhostOkToDropTable  bool             `gorm:"type:tinyint(1);not null;default:0;comment:gh-ost执行成功后自动删除旧表" json:"ghost_ok_to_drop_table"`
 	SchedulerRegistered bool             `gorm:"type:tinyint(1);not null;default:0;comment:定时任务是否已注册到调度器;index" json:"scheduler_registered"`
-	GenerateRollback    *bool            `gorm:"type:tinyint(1);default:1;comment:DML工单是否生成回滚语句(仅DML有效)" json:"generate_rollback"` // 用指针避免 GORM 忽略 false
+	GenerateRollback    *bool            `gorm:"type:tinyint(1);default:1;comment:DML工单是否生成回滚语句(仅DML有效)" json:"generate_rollback"`       // 用指针避免 GORM 忽略 false
+	DDLExecutionMode    DDLExecutionMode `gorm:"type:varchar(20);default:'';comment:DDL执行方式(ghost/direct)，仅DDL有效" json:"ddl_execution_mode"` // ghost=gh-ost, direct=直接ALTER
 }
 
 func (OrderRecord) TableName() string {

@@ -78,6 +78,17 @@ export function fetchSyntaxCheck(data: Api.Orders.SyntaxCheckRequest) {
 }
 
 /**
+ * DDL 预检：检查 ALTER TABLE 涉及的表是否有主键或唯一键（语法检查时调用，执行方式为 gh-ost 时）
+ */
+export function fetchCheckDDL(data: { instance_id: string; schema: string; content: string }) {
+  return request<{ tables_without_pk_or_uk: string[] }>({
+    url: '/api/v1/insight/orders/check-ddl',
+    method: 'post',
+    data
+  });
+}
+
+/**
  * Create order
  */
 export function fetchCreateOrder(data: Api.Orders.CreateOrderRequest) {

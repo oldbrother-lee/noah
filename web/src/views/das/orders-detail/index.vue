@@ -3,6 +3,7 @@ import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDebounceFn, useThrottleFn } from '@vueuse/core';
 import {
+  NAlert,
   NButton,
   NDataTable,
   NDatePicker,
@@ -109,6 +110,8 @@ interface OrderDetailVO {
   environment: string;
   instance: string;
   schedule_time?: string;
+  /** DDL 执行方式：ghost=无锁变更，direct=直接 ALTER */
+  ddl_execution_mode?: string;
 }
 
 // 工单详情数据
@@ -123,6 +126,9 @@ const actionVisible = ref(false);
 const closeVisible = ref(false);
 const confirmMsg = ref('');
 const ghostOkToDropTable = ref(false); // gh-ost执行成功后自动删除旧表
+const executeConfirmVisible = ref(false); // DDL 执行确认弹窗（内含「执行成功后自动删除旧表」）
+const executeConfirmForAll = ref(true); // true=执行全部，false=执行单条
+const executeConfirmTaskRow = ref<any>(null); // 执行单条时的任务行
 const hookVisible = ref(false);
 const resetToPending = ref(true);
 
@@ -491,6 +497,7 @@ const getFlowNodeStepStatus = (node: any, index: number): 'wait' | 'process' | '
 // OSC Progress
 const oscContent = ref('');
 const websocket = ref<WebSocket | null>(null);
+const wsConnecting = ref(false); // WebSocket 正在建立连接，用于执行日志区域展示「正在连接」提示
 const reconnectAttempts = ref(0);
 const maxReconnectAttempts = 10; // 最大重连次数
 const reconnectDelay = 3000; // 重连延迟（毫秒）
@@ -545,11 +552,22 @@ const isOrderExecuting = computed(() => {
   return status && ['执行中', '已批准'].includes(status);
 });
 
+// 执行日志展示内容：连接中且无内容时显示提示，避免长时间空白
+const executionLogDisplayContent = computed(() => {
+  if (wsConnecting.value && !oscContent.value) {
+    return '[正在连接执行日志，请稍候…]';
+  }
+  if (wsConnecting.value && oscContent.value) {
+    return `[正在连接实时日志…]\n\n${oscContent.value}`;
+  }
+  return oscContent.value;
+});
+
 const startOrderStatusPolling = () => {
   if (orderStatusTimer) return;
   orderStatusTimer = setInterval(async () => {
     if (!orderDetail.value?.order_id) return;
-    await getOrderDetail();
+    await getOrderDetail({ background: true });
     const p = orderDetail.value?.progress;
     if (!p || !['执行中', '已批准'].includes(p)) {
       stopOrderStatusPolling();
@@ -587,6 +605,7 @@ const initWebSocket = (force = false) => {
   const orderId = route.params.id as string;
   if (!orderId) return;
 
+  wsConnecting.value = true;
   let wsUrl = '';
   const isDev = import.meta.env.DEV;
   const serviceBaseUrl = import.meta.env.VITE_SERVICE_BASE_URL;
@@ -615,6 +634,7 @@ const initWebSocket = (force = false) => {
   try {
     websocket.value = new WebSocket(wsUrl);
   } catch (error) {
+    wsConnecting.value = false;
     console.error('WebSocket 连接创建失败', { orderId, error, wsUrl });
     message.error('WebSocket 连接创建失败，请检查网络连接');
     return;
@@ -625,12 +645,14 @@ const initWebSocket = (force = false) => {
     getTasks(true);
   }, 1000);
   const debouncedRefreshDetail = useDebounceFn(() => {
-    getOrderDetail();
+    getOrderDetail({ background: true });
   }, 1500);
 
   websocket.value.onopen = () => {
+    wsConnecting.value = false;
     reconnectAttempts.value = 0; // 重置重连次数
-    
+    stopOrderStatusPolling(); // WebSocket 已连接，由 WS 消息触发局部刷新，不再轮询
+
     // 连接成功后，先恢复历史日志（如果为空）
     // 但不要覆盖已有的实时日志
     if (!oscContent.value) {
@@ -675,8 +697,9 @@ const initWebSocket = (force = false) => {
         for (const key in result.data) {
           logText += `${key}: ${result.data[key]}\n`;
         }
-        // processlist 类型替换整个内容
-        oscContent.value = logText;
+        // 追加 processlist，不覆盖已有历史日志（刷新后历史从任务 result 恢复）
+        const prefix = oscContent.value ? '\n\n' : '';
+        oscContent.value = oscContent.value + prefix + logText;
         logBuffer.value = []; // 清空缓冲区
       } else if (result.type === 'ghost-progress') {
         // gh-ost 进度信息
@@ -729,18 +752,24 @@ const initWebSocket = (force = false) => {
     }
   };
 
-  websocket.value.onerror = error => {
-    console.error('WebSocket 连接错误', { orderId, error, wsUrl });
+  websocket.value.onerror = () => {
+    wsConnecting.value = false;
+    console.error('WebSocket 连接错误', { orderId, wsUrl });
     // 错误时会在 onclose 中处理重连
   };
 
-  websocket.value.onclose = event => {
+  websocket.value.onclose = () => {
+    wsConnecting.value = false;
     websocket.value = null;
 
     // 检查工单状态（重新获取最新状态，避免状态不同步）
     const currentStatus = orderDetail.value?.progress;
     const shouldReconnect = currentStatus && ['执行中', '已批准'].includes(currentStatus);
-    
+
+    if (shouldReconnect) {
+      startOrderStatusPolling(); // WS 断开期间用轮询做局部刷新，重连后 onopen 会停掉轮询
+    }
+
     if (shouldReconnect && reconnectAttempts.value < maxReconnectAttempts) {
       reconnectAttempts.value++;
       
@@ -820,6 +849,7 @@ const trimLogIfNeeded = () => {
 };
 
 const closeWebSocket = () => {
+  wsConnecting.value = false;
   // 清除重连定时器
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -991,7 +1021,7 @@ const resultColumns = computed<any[]>(() => [
       // 创建按钮数组
       const buttons: any[] = [];
       
-      // 执行按钮
+      // 执行按钮（仅执行人可点击）
       buttons.push(
         h(
           NButton,
@@ -999,8 +1029,13 @@ const resultColumns = computed<any[]>(() => [
             size: 'small',
             type: 'primary',
             secondary: true,
-            // 禁用条件：工单不可执行 或 任务已完成 或 任务正在执行 或 是定时工单
-            disabled: !isOrderExecutable || isTaskCompleted || isTaskRunning || Boolean(orderDetail.value?.schedule_time),
+            // 禁用条件：非执行人 或 工单不可执行 或 任务已完成 或 任务正在执行 或 定时工单
+            disabled:
+              !isExecutor.value ||
+              !isOrderExecutable ||
+              isTaskCompleted ||
+              isTaskRunning ||
+              Boolean(orderDetail.value?.schedule_time),
             onClick: () => handleExecuteSingle(row),
             style: { marginRight: hasRollbackSQL ? '8px' : '0' }
           },
@@ -1110,10 +1145,10 @@ const showGenerateBtn = computed(() => {
 
 const showExecuteAllBtn = computed(() => {
   if (!orderDetail.value) return false;
-  // 如果任务列表不为空，且状态允许，显示执行全部
   const p = orderDetail.value.progress;
   const validStatus = ['已批准', '执行中'].includes(p);
-  return validStatus;
+  // 仅执行人可看到并点击「执行全部」
+  return validStatus && isExecutor.value;
 });
 
 const closeDisabled = computed(() => {
@@ -1153,12 +1188,13 @@ const actionType = computed(() => {
   return 'none';
 });
 
-// 获取工单详情
-const getOrderDetail = async () => {
+// 获取工单详情；background=true 时不显示全页 loading，用于轮询/WS 触发的局部刷新
+const getOrderDetail = async (options?: { background?: boolean }) => {
   const orderId = route.params.id as string;
   if (!orderId) return;
 
-  loading.value = true;
+  const background = options?.background === true;
+  if (!background) loading.value = true;
   try {
     const res: any = await fetchOrderDetail(orderId);
     if (res.error) {
@@ -1255,15 +1291,38 @@ const getOrderDetail = async () => {
     }
   } catch (error) {
     console.error('获取工单详情失败:', error);
-    window.$message?.error('获取工单详情失败');
+    if (!background) window.$message?.error('获取工单详情失败');
   } finally {
-    loading.value = false;
+    if (!background) loading.value = false;
   }
 };
 
 const isExecutor = computed(() => {
-  if (!orderDetail.value || !authStore.userInfo.userName) return false;
-  return orderDetail.value.executor?.includes(authStore.userInfo.userName);
+  if (!orderDetail.value) return false;
+  const name = authStore.userInfo.userName;
+  const loginName = authStore.userInfo.username;
+  if (!name && !loginName) return false;
+
+  const list = orderDetail.value.executor ?? [];
+  const fromOrder = list.length > 0 && (list.includes(name) || list.includes(loginName));
+  if (fromOrder) return true;
+
+  // 流程工单：order.executor 可能为空，从流程实例的执行节点取 assignee 判断
+  const flow = flowInstance.value;
+  if (flow?.tasks && Array.isArray(flow.tasks)) {
+    const executeTasks = flow.tasks.filter(
+      (t: any) =>
+        t.nodeCode === 'dba_execute' ||
+        (t.nodeName && String(t.nodeName).includes('执行'))
+    );
+    for (const t of executeTasks) {
+      const a = t.assignee ?? t.Assignee ?? '';
+      const aNick = t.assignee_nickname ?? t.AssigneeNickname ?? '';
+      if (a === loginName || a === name || aNick === name || aNick === loginName) return true;
+    }
+  }
+
+  return false;
 });
 
 const canEditSchedule = computed(() => {
@@ -1445,7 +1504,13 @@ onMounted(async () => {
   getOpLogs();
   // getTaskPreview();
   await getTasks();
-  
+
+  // 执行阶段若执行日志仍为空，在建立 WS 前先恢复历史，避免 WS 新消息覆盖
+  const p = orderDetail.value?.progress;
+  if (!oscContent.value && p && ['执行中', '已完成', '已失败', '已复核'].includes(p)) {
+    await restoreHistoryLogs();
+  }
+
   // 如果是 gh-ost 工单，先从 Redis 获取最新进度（页面刷新时立即显示）
   if (isGhostOrder.value) {
     await loadGhostProgressFromRedis();
@@ -1454,7 +1519,7 @@ onMounted(async () => {
       ghostThrottled.value = false;
     }
   }
-  
+
   // 如果工单在执行中，强制建立 WebSocket 连接
   // 使用 force=true 确保即使状态检查失败也能连接
   if (isOrderExecuting.value) {
@@ -1572,12 +1637,7 @@ const handleActionOk = async () => {
   try {
     if (actionType.value === 'approve') {
       const status = confirmOkText.value === '同意' ? 'pass' : 'reject';
-      await fetchApproveOrder({ 
-        status, 
-        msg: confirmMsg.value, 
-        order_id: orderId,
-        ghost_ok_to_drop_table: ghostOkToDropTable.value
-      } as any);
+      await fetchApproveOrder({ status, msg: confirmMsg.value, order_id: orderId } as any);
     } else if (actionType.value === 'feedback') {
       const progress = confirmOkText.value === '执行完成' ? '已完成' : '执行中';
       await fetchFeedbackOrder({ progress, msg: confirmMsg.value, order_id: orderId } as any);
@@ -1590,7 +1650,6 @@ const handleActionOk = async () => {
   } finally {
     loading.value = false;
     confirmMsg.value = '';
-    ghostOkToDropTable.value = false; // 重置选项
   }
 };
 
@@ -1632,25 +1691,17 @@ const handleGenerateTasks = async () => {
   }
 };
 
-const handleExecuteAll = async () => {
+const doExecuteAll = async () => {
   if (!orderDetail.value) return;
   activeTab.value = 'osc-progress';
-  // 在执行任务之前，先建立 WebSocket 连接以接收实时日志
   initWebSocket(true);
   executeLoading.value = true;
   try {
-    // 如果没有任务，先自动生成任务
-    // if (tasksList.value.length === 0) {
-    //   const { error: genError } = await fetchGenerateTasks({ order_id: orderDetail.value.order_id } as any);
-    //   if (genError) return;
-    //   // 刷新任务列表
-    //   await getTasks(true);
-    // }
-
-    const { data, error } = await fetchExecuteAllTasks({ order_id: orderDetail.value.order_id } as any);
+    const payload: Record<string, any> = { order_id: orderDetail.value.order_id };
+    if (orderDetail.value.sql_type === 'DDL') payload.ghost_ok_to_drop_table = ghostOkToDropTable.value;
+    const { data, error } = await fetchExecuteAllTasks(payload as any);
     if (error) return;
 
-    // 从 data.data.message 获取消息
     const msgType = data?.data?.type;
     const msgContent = data?.data?.message || data?.message || '已触发全部执行';
 
@@ -1670,17 +1721,28 @@ const handleExecuteAll = async () => {
   }
 };
 
-const handleExecuteSingle = async (row: any) => {
+const handleExecuteAll = () => {
+  if (!orderDetail.value) return;
+  if (orderDetail.value.sql_type === 'DDL') {
+    executeConfirmForAll.value = true;
+    executeConfirmTaskRow.value = null;
+    executeConfirmVisible.value = true;
+    return;
+  }
+  doExecuteAll();
+};
+
+const doExecuteSingle = async (row: any) => {
   activeTab.value = 'osc-progress';
-  // 在执行任务之前，先建立 WebSocket 连接以接收实时日志
   initWebSocket(true);
+  executeLoading.value = true;
   try {
-    const res: any = await fetchExecuteSingleTask({ task_id: row.id } as any);
-    // request 的 transformBackendResponse 返回 response.data.data
-    // 所以 res.data 就是 { message: "执行成功", type: "success" }
+    const payload: Record<string, any> = { task_id: row.task_id ?? row.id };
+    if (orderDetail.value?.sql_type === 'DDL') payload.ghost_ok_to_drop_table = ghostOkToDropTable.value;
+    const res: any = await fetchExecuteSingleTask(payload as any);
     const msgContent = res?.data?.message || '已触发执行';
     const msgType = res?.data?.type || 'success';
-    
+
     if (msgType === 'error') {
       window.$message?.error(msgContent);
     } else if (msgType === 'warning') {
@@ -1688,11 +1750,32 @@ const handleExecuteSingle = async (row: any) => {
     } else {
       window.$message?.success(msgContent);
     }
-    // 刷新单行状态太麻烦，直接刷新列表
     handleRefresh();
   } catch (e: any) {
     window.$message?.error(e?.message || '执行失败');
+  } finally {
+    executeLoading.value = false;
   }
+};
+
+const handleExecuteSingle = (row: any) => {
+  if (orderDetail.value?.sql_type === 'DDL') {
+    executeConfirmForAll.value = false;
+    executeConfirmTaskRow.value = row;
+    executeConfirmVisible.value = true;
+    return;
+  }
+  doExecuteSingle(row);
+};
+
+const confirmExecuteModal = async () => {
+  if (executeConfirmForAll.value) {
+    await doExecuteAll();
+  } else if (executeConfirmTaskRow.value) {
+    await doExecuteSingle(executeConfirmTaskRow.value);
+    executeConfirmTaskRow.value = null;
+  }
+  executeConfirmVisible.value = false;
 };
 
 // 创建回滚工单（单个任务）
@@ -2037,7 +2120,7 @@ const submitHook = async () => {
                 ghost
                 :size="appStore.isMobile ? 'tiny' : 'small'"
                 :loading="executeLoading"
-                :disabled="!!orderDetail?.schedule_time"
+                :disabled="!isExecutor || !!orderDetail?.schedule_time"
                 @click="handleExecuteAll"
               >
                 <template #icon>
@@ -2068,6 +2151,17 @@ const submitHook = async () => {
                 <div class="info-item">
                   <span class="label">工单类型：</span>
                   <span class="value">{{ orderDetail?.sql_type }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="label">执行方式：</span>
+                  <span class="value">
+                    <template v-if="orderDetail?.sql_type === 'DDL'">
+                      <NTag v-if="orderDetail?.ddl_execution_mode === 'ghost'" type="success" size="small" :bordered="false">无锁变更</NTag>
+                      <NTag v-else-if="orderDetail?.ddl_execution_mode === 'direct'" type="error" size="small" :bordered="false">直接 ALTER</NTag>
+                      <span v-else>—</span>
+                    </template>
+                    <span v-else>—</span>
+                  </span>
                 </div>
                 <div class="info-item min-w-0">
                   <span class="label flex-shrink-0 whitespace-nowrap">DB实例：</span>
@@ -2543,7 +2637,7 @@ const submitHook = async () => {
                 <!-- 执行进度标签页 -->
                 <NTabPane name="osc-progress" tab="执行日志">
                   <div class="tab-content">
-                    <LogViewer :content="oscContent" :height="appStore.isMobile ? '300px' : '500px'" :theme="theme" />
+                    <LogViewer :content="executionLogDisplayContent" :height="appStore.isMobile ? '300px' : '500px'" :theme="theme" />
                   </div>
                 </NTabPane>
               </NTabs>
@@ -2571,13 +2665,6 @@ const submitHook = async () => {
 
     <NModal v-model:show="actionVisible" preset="dialog" title="请输入附加信息">
       <NInput v-model:value="confirmMsg" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" />
-      <!-- gh-ost 参数：仅在 DDL 工单审核通过时显示 -->
-      <div v-if="actionType === 'approve' && confirmOkText === '同意' && orderDetail?.sql_type === 'DDL'" style="margin-top: 16px">
-        <NSwitch v-model:value="ghostOkToDropTable" />
-        <span style="margin-left: 8px; font-size: 12px; color: #666">
-          gh-ost执行成功后自动删除旧表（-ok-to-drop-table）
-        </span>
-      </div>
       <template #action>
         <NSpace>
           <NButton @click="handleActionCancel">{{ confirmCancelText }}</NButton>
@@ -2594,6 +2681,38 @@ const submitHook = async () => {
           <NButton type="primary" :loading="loading" @click="handleCloseOk">确定</NButton>
         </NSpace>
       </template>
+    </NModal>
+
+    <!-- DDL 执行确认：无锁变更显示「执行成功后自动删除旧表」；直接 ALTER 显示锁表风险提示 -->
+    <NModal
+      v-model:show="executeConfirmVisible"
+      preset="dialog"
+      :title="executeConfirmForAll ? '确认执行全部任务' : '确认执行该任务'"
+      positive-text="确认执行"
+      negative-text="取消"
+      :loading="executeLoading"
+      @positive-click="confirmExecuteModal"
+      @negative-click="executeConfirmVisible = false"
+    >
+      <div class="py-2">
+        <template v-if="orderDetail?.ddl_execution_mode === 'direct'">
+          <NAlert type="warning" :show-icon="true" class="mb-0">
+            直接 ALTER 会锁表，请注意对业务的影响。
+          </NAlert>
+          <p class="text-gray-600 dark:text-gray-400 mt-3 mb-0">
+            {{ executeConfirmForAll ? '将执行本工单全部 DDL 任务（直接 ALTER）。' : '将执行该条 DDL 任务（直接 ALTER）。' }}
+          </p>
+        </template>
+        <template v-else>
+          <p class="text-gray-600 dark:text-gray-400 mb-4">
+            {{ executeConfirmForAll ? '将执行本工单全部 DDL 任务（无锁变更）。' : '将执行该条 DDL 任务（无锁变更）。' }}
+          </p>
+          <div class="flex items-center gap-2">
+            <NSwitch v-model:value="ghostOkToDropTable" :size="appStore.isMobile ? 'small' : 'medium'" />
+            <span class="text-sm text-gray-600 dark:text-gray-400">执行成功后自动删除旧表</span>
+          </div>
+        </template>
+      </div>
     </NModal>
 
     <NModal v-model:show="hookVisible" preset="dialog" title="HOOK工单" :style="{ width: appStore.isMobile ? '95%' : '65%' }">

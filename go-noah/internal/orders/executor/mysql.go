@@ -78,9 +78,23 @@ func (e *MySQLExecutor) Connect() (*sql.DB, error) {
 	return db, nil
 }
 
-// ExecuteDDL 执行DDL语句
+// CheckTableHasPrimaryOrUniqueKey 检查表是否有主键或唯一键（供提交时预检与执行器内部使用）
+func CheckTableHasPrimaryOrUniqueKey(ctx context.Context, db *sql.DB, schema, table string) (bool, error) {
+	query := `SELECT 1 FROM information_schema.STATISTICS 
+		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND (INDEX_NAME = 'PRIMARY' OR NON_UNIQUE = 0) LIMIT 1`
+	var dummy int
+	err := db.QueryRowContext(ctx, query, schema, table).Scan(&dummy)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ExecuteDDL 执行DDL语句（按工单的 ddl_execution_mode：ghost=gh-ost，direct=直接 ALTER，不自动降级）
 func (e *MySQLExecutor) ExecuteDDL() (ReturnData, error) {
-	// 解析SQL类型，判断是否需要使用 gh-ost
 	sqlType, err := parser.GetSqlStatement(e.Config.SQL)
 	if err != nil {
 		return ReturnData{Error: err.Error()}, err
@@ -88,8 +102,15 @@ func (e *MySQLExecutor) ExecuteDDL() (ReturnData, error) {
 
 	switch sqlType {
 	case "AlterTable":
-		// ALTER TABLE 使用 gh-ost 在线执行
-		return e.ExecuteDDLWithGhost()
+		mode := strings.TrimSpace(strings.ToLower(e.Config.DDLExecutionMode))
+		if mode == "direct" || mode == "" {
+			// mode=="" 兼容历史未填执行方式的 DDL 工单，按直接 ALTER 执行
+			return e.ExecuteOnlineDDL()
+		}
+		if mode == "ghost" {
+			return e.ExecuteDDLWithGhost()
+		}
+		return ReturnData{Error: "工单未指定DDL执行方式(ghost/direct)，无法执行"}, errors.New("工单未指定DDL执行方式")
 	case "CreateDatabase", "CreateTable", "CreateView":
 		// CREATE 语句直接执行
 		return e.ExecuteOnlineDDL()
@@ -239,9 +260,10 @@ func (e *MySQLExecutor) ExecuteDDLWithGhost() (ReturnData, error) {
 		ghostArgs = []string{} // 使用默认参数
 	}
 
-	// 移除SQL语句前后的所有空白字符
-	newSQL := strings.TrimSpace(e.Config.SQL)
-	logMessage("移除SQL语句前后的所有空白字符，包括空格、制表符、换行符等")
+	// 移除SQL语句前后的所有空白字符及分号（空格、制表符、换行符、分号等）
+	const sqlTrimSet = " \t\n\r\x0b\x0c;"
+	newSQL := strings.Trim(e.Config.SQL, sqlTrimSet)
+	logMessage("移除SQL语句前后的所有空白字符及分号，包括空格、制表符、换行符等")
 
 	// 获取表名
 	fullTableName, err := parser.GetTableNameFromAlterStatement(e.Config.SQL)

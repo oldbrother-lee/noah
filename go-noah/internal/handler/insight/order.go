@@ -764,7 +764,8 @@ type CreateOrderRequest struct {
 	ScheduleTime       FlexibleTime `json:"schedule_time"`
 	FixVersion         string       `json:"fix_version"`
 	ExportFileFormat   string       `json:"export_file_format"`
-	GenerateRollback   *bool        `json:"generate_rollback"` // DML工单是否生成回滚语句，默认 true
+	GenerateRollback   *bool        `json:"generate_rollback"`   // DML工单是否生成回滚语句，默认 true
+	DDLExecutionMode   string       `json:"ddl_execution_mode"` // DDL 执行方式：ghost=gh-ost，direct=直接 ALTER，DDL 工单必填
 }
 
 // CreateOrder 创建工单
@@ -800,6 +801,27 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
+	// DDL 工单：必须指定执行方式 ghost 或 direct
+	if req.SQLType == "DDL" {
+		mode := strings.TrimSpace(strings.ToLower(req.DDLExecutionMode))
+		if mode != "ghost" && mode != "direct" {
+			api.HandleError(c, http.StatusBadRequest, fmt.Errorf("DDL工单必须选择执行方式：ghost(gh-ost在线变更) 或 direct(直接ALTER)"), nil)
+			return
+		}
+		// 选择 gh-ost 时预检：所有涉及表必须有主键或唯一键
+		if mode == "ghost" {
+			tablesWithoutPK, err := h.checkDDLTablesForGhost(c.Request.Context(), req.InstanceID, req.Schema, req.Content)
+			if err != nil {
+				api.HandleError(c, http.StatusBadRequest, err, nil)
+				return
+			}
+			if len(tablesWithoutPK) > 0 {
+				api.HandleError(c, http.StatusBadRequest, fmt.Errorf("以下表无主键或唯一键，无法使用 gh-ost：%s。请选择「直接 ALTER」或先为表添加主键/唯一键后再提交", strings.Join(tablesWithoutPK, "、")), nil)
+				return
+			}
+		}
+	}
+
 	// DML 工单：仅当明确传 generate_rollback 时使用传值，否则默认 true；非 DML 忽略该字段
 	var generateRollback bool
 	if req.SQLType == "DML" {
@@ -826,8 +848,11 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		ScheduleTime:       req.ScheduleTime.Time,
 		FixVersion:         req.FixVersion,
 		ExportFileFormat:   insight.ExportFileFormat(req.ExportFileFormat),
-		GhostOkToDropTable: false, // 默认false，由审核人在审核时设置
+		GhostOkToDropTable: false, // 默认false，执行时由用户选择
 		GenerateRollback:   &generateRollback,
+	}
+	if req.SQLType == "DDL" {
+		order.DDLExecutionMode = insight.DDLExecutionMode(strings.TrimSpace(strings.ToLower(req.DDLExecutionMode)))
 	}
 
 	// 转换 JSON 字段
@@ -1044,6 +1069,100 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	api.HandleSuccess(c, order)
 }
 
+// checkDDLTablesForGhost 检查 DDL 内容中涉及的 ALTER TABLE 是否都有主键或唯一键；返回无主键/唯一键的表列表（用于提交 gh-ost 工单时预检）
+func (h *OrderHandler) checkDDLTablesForGhost(ctx context.Context, instanceID, defaultSchema, content string) (tablesWithoutPK []string, err error) {
+	// 解析出所有 ALTER TABLE 的表名（多条语句按分号分隔）
+	statements := strings.Split(content, ";")
+	seen := make(map[string]struct{})
+	var tables []struct{ schema, table string }
+	for _, stmt := range statements {
+		stmt = strings.TrimSpace(stmt)
+		if stmt == "" {
+			continue
+		}
+		fullName, err := parser.GetTableNameFromAlterStatement(stmt)
+		if err != nil {
+			continue // 非 ALTER TABLE 或解析失败则跳过
+		}
+		var schema, table string
+		if strings.Contains(fullName, ".") {
+			parts := strings.SplitN(fullName, ".", 2)
+			schema = strings.Trim(parts[0], "`")
+			table = strings.Trim(parts[1], "`")
+		} else {
+			schema = defaultSchema
+			table = strings.Trim(fullName, "`")
+		}
+		key := schema + "." + table
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		tables = append(tables, struct{ schema, table string }{schema, table})
+	}
+	if len(tables) == 0 {
+		return nil, nil
+	}
+	// 获取 DB 配置并连接
+	dbConfig, err := service.InsightServiceApp.GetDBConfigByInstanceID(ctx, instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("获取数据库配置失败: %w", err)
+	}
+	cfg := &executor.DBConfig{
+		Hostname: dbConfig.Hostname,
+		Port:     dbConfig.Port,
+		UserName: dbConfig.UserName,
+		Password: dbConfig.Password,
+		Schema:   defaultSchema,
+	}
+	exec := executor.NewMySQLExecutor(cfg)
+	db, err := exec.Connect()
+	if err != nil {
+		return nil, fmt.Errorf("连接数据库失败: %w", err)
+	}
+	defer db.Close()
+	for _, t := range tables {
+		has, err := executor.CheckTableHasPrimaryOrUniqueKey(ctx, db, t.schema, t.table)
+		if err != nil {
+			return nil, fmt.Errorf("检查表 %s.%s 失败: %w", t.schema, t.table, err)
+		}
+		if !has {
+			tablesWithoutPK = append(tablesWithoutPK, t.schema+"."+t.table)
+		}
+	}
+	return tablesWithoutPK, nil
+}
+
+// CheckDDLRequest DDL 预检请求（语法检查时调用，检查表是否有主键/唯一键）
+type CheckDDLRequest struct {
+	InstanceID string `json:"instance_id" binding:"required"`
+	Schema     string `json:"schema" binding:"required"`
+	Content    string `json:"content" binding:"required"`
+}
+
+// CheckDDL 预检 DDL：返回无主键/唯一键的表列表，供语法检查阶段展示
+// @Summary DDL 预检（主键/唯一键）
+// @Tags 工单管理
+// @Security Bearer
+// @Accept json
+// @Produce json
+// @Param request body CheckDDLRequest true "instance_id, schema, content"
+// @Success 200 {object} api.Response{data=[]string}
+// @Router /api/v1/insight/orders/check-ddl [post]
+func (h *OrderHandler) CheckDDL(c *gin.Context) {
+	var req CheckDDLRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.HandleError(c, http.StatusBadRequest, err, nil)
+		return
+	}
+	list, err := h.checkDDLTablesForGhost(c.Request.Context(), req.InstanceID, req.Schema, req.Content)
+	if err != nil {
+		api.HandleError(c, http.StatusBadRequest, err, nil)
+		return
+	}
+	api.HandleSuccess(c, gin.H{"tables_without_pk_or_uk": list})
+}
+
 // UpdateOrderProgressRequest 更新工单进度请求
 type UpdateOrderProgressRequest struct {
 	OrderID  string `json:"order_id" binding:"required"`
@@ -1106,10 +1225,9 @@ func (h *OrderHandler) UpdateOrderProgress(c *gin.Context) {
 
 // ApproveOrderRequest 审批工单请求
 type ApproveOrderRequest struct {
-	OrderID            string `json:"order_id" binding:"required"`
-	Status             string `json:"status" binding:"required,oneof=pass reject"` // pass: 通过, reject: 驳回
-	Msg                string `json:"msg"`                                         // 审批意见
-	GhostOkToDropTable bool   `json:"ghost_ok_to_drop_table"`                      // gh-ost执行成功后自动删除旧表（仅DDL工单有效）
+	OrderID string `json:"order_id" binding:"required"`
+	Status  string `json:"status" binding:"required,oneof=pass reject"` // pass: 通过, reject: 驳回
+	Msg     string `json:"msg"`                                         // 审批意见
 }
 
 // ApproveOrder 审批工单
@@ -1179,17 +1297,7 @@ func (h *OrderHandler) ApproveOrder(c *gin.Context) {
 		return
 	}
 
-	// 如果是DDL工单且审核通过，更新 gh-ost 参数
-	if req.Status == "pass" && order.SQLType == insight.SQLTypeDDL {
-		// 使用 UpdateDBConfigFields 的方式更新单个字段
-		updates := map[string]interface{}{
-			"ghost_ok_to_drop_table": req.GhostOkToDropTable,
-		}
-		if err := service.InsightServiceApp.UpdateOrderFields(c.Request.Context(), req.OrderID, updates); err != nil {
-			api.HandleError(c, http.StatusInternalServerError, err, nil)
-			return
-		}
-	}
+	// gh-ost 执行成功后是否自动删除旧表 已移至「执行」时选择，审核时不再设置
 
 	// 调用流程引擎审批
 	if req.Status == "pass" {
@@ -1498,8 +1606,9 @@ func (h *OrderHandler) getUsersFromFlowNode(ctx context.Context, node *model.Flo
 
 // ExecuteTaskRequest 执行任务请求
 type ExecuteTaskRequest struct {
-	TaskID  string `json:"task_id"`  // 执行单个任务时使用
-	OrderID string `json:"order_id"` // 执行全部任务时使用
+	TaskID             string `json:"task_id"`               // 执行单个任务时使用
+	OrderID            string `json:"order_id"`              // 执行全部任务时使用
+	GhostOkToDropTable *bool  `json:"ghost_ok_to_drop_table"` // DDL 执行时：gh-ost 成功后是否自动删除旧表（仅 DDL 有效）
 }
 
 // ExecuteTask 执行工单任务（支持单个任务和全部任务）
@@ -1530,7 +1639,7 @@ func (h *OrderHandler) ExecuteTask(c *gin.Context) {
 
 	// 如果提供了 order_id，执行全部任务
 	if req.OrderID != "" {
-		h.executeAllTasks(c, req.OrderID, username, userId)
+		h.executeAllTasks(c, req.OrderID, username, userId, req.GhostOkToDropTable)
 		return
 	}
 
@@ -1607,10 +1716,15 @@ func (h *OrderHandler) ExecuteTask(c *gin.Context) {
 	if order.GenerateRollback != nil {
 		generateRollback = *order.GenerateRollback
 	}
+	// DDL 执行时：ghost 是否自动删旧表，以本次执行请求为准（请求未传则用工单原值）
+	ghostOkToDrop := order.GhostOkToDropTable
+	if order.SQLType == insight.SQLTypeDDL && req.GhostOkToDropTable != nil {
+		ghostOkToDrop = *req.GhostOkToDropTable
+	}
 	// 创建执行器配置
 	global.Logger.Info("创建执行器配置",
 		zap.String("order_id", order.OrderID.String()),
-		zap.Bool("ghost_ok_to_drop_table", order.GhostOkToDropTable),
+		zap.Bool("ghost_ok_to_drop_table", ghostOkToDrop),
 		zap.Bool("generate_rollback", generateRollback),
 		zap.String("sql_type", string(task.SQLType)),
 	)
@@ -1626,8 +1740,9 @@ func (h *OrderHandler) ExecuteTask(c *gin.Context) {
 		OrderID:            order.OrderID.String(),
 		TaskID:             task.TaskID.String(),
 		ExportFileFormat:   string(order.ExportFileFormat),
-		GhostOkToDropTable: order.GhostOkToDropTable,
+		GhostOkToDropTable: ghostOkToDrop,
 		GenerateRollback:   generateRollback,
+		DDLExecutionMode:   string(order.DDLExecutionMode),
 	}
 
 	// 记录执行开始日志（用于调试）
@@ -1720,11 +1835,10 @@ func (h *OrderHandler) checkOrderStatus(ctx context.Context, orderID string, use
 	// 检查用户是否是 admin（用户ID=1 或拥有 admin 角色）
 	isAdmin := false
 	if userID == 1 {
-		// 用户ID=1，是超级管理员
 		isAdmin = true
 	} else {
-		// 检查用户是否有 admin 角色
-		roles, err := global.Enforcer.GetRolesForUser(string(rune(userID)))
+		uidStr := strconv.FormatUint(uint64(userID), 10)
+		roles, err := global.Enforcer.GetRolesForUser(uidStr)
 		if err == nil {
 			for _, role := range roles {
 				if role == model.AdminRole {
@@ -1735,17 +1849,42 @@ func (h *OrderHandler) checkOrderStatus(ctx context.Context, orderID string, use
 		}
 	}
 
-	// 如果不是 admin，检查执行权限
+	// 非 admin 必须具有执行权限：工单配置了执行人时须在列表中；未配置时从流程实例的执行节点取 assignee
 	if !isAdmin {
 		var executorList []string
 		if order.Executor != nil {
 			if err := json.Unmarshal(order.Executor, &executorList); err != nil {
-				return err
+				var executorObjs []map[string]interface{}
+				if err2 := json.Unmarshal(order.Executor, &executorObjs); err2 == nil {
+					for _, o := range executorObjs {
+						if u, ok := o["user"].(string); ok && u != "" {
+							executorList = append(executorList, u)
+						}
+					}
+				}
 			}
 		}
-		// 如果 executor 列表不为空且当前用户不在列表中，则拒绝
-		if len(executorList) > 0 && !utils.IsContain(executorList, username) {
-			return api.ErrForbidden
+		if len(executorList) == 0 {
+			// 未配置执行人：若有流程实例，从执行节点的 assignee 判断
+			if order.FlowInstanceID > 0 {
+				flowDetail, errFlow := service.FlowServiceApp.GetFlowInstanceDetail(ctx, order.FlowInstanceID)
+				if errFlow == nil && flowDetail != nil && len(flowDetail.Tasks) > 0 {
+					for _, task := range flowDetail.Tasks {
+						if strings.Contains(task.NodeCode, "execute") || strings.Contains(task.NodeName, "执行") {
+							if task.Assignee == username {
+								executorList = []string{username}
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+		if len(executorList) == 0 {
+			return api.ErrForbidden // 未配置执行人且非流程执行节点 assignee，仅 admin 可执行
+		}
+		if !utils.IsContain(executorList, username) {
+			return api.ErrForbidden // 当前用户不在执行人列表中
 		}
 	}
 
@@ -1847,7 +1986,7 @@ func (h *OrderHandler) updateOrderStatusToFinish(ctx context.Context, orderID st
 }
 
 // executeAllTasks 执行工单的所有任务
-func (h *OrderHandler) executeAllTasks(c *gin.Context, orderID string, username string, userID uint) {
+func (h *OrderHandler) executeAllTasks(c *gin.Context, orderID string, username string, userID uint, ghostOkToDropTable *bool) {
 	// 获取工单信息
 	order, err := service.InsightServiceApp.GetOrderByID(c.Request.Context(), orderID)
 	if err != nil {
@@ -1951,10 +2090,15 @@ func (h *OrderHandler) executeAllTasks(c *gin.Context, orderID string, username 
 			if order.GenerateRollback != nil {
 				generateRollbackBatch = *order.GenerateRollback
 			}
+			// DDL 执行时：ghost 是否自动删旧表，以本次执行请求为准
+			ghostOkToDropBatch := order.GhostOkToDropTable
+			if order.SQLType == insight.SQLTypeDDL && ghostOkToDropTable != nil {
+				ghostOkToDropBatch = *ghostOkToDropTable
+			}
 			// 创建执行器配置
 			global.Logger.Info("创建执行器配置（批量执行）",
 				zap.String("order_id", order.OrderID.String()),
-				zap.Bool("ghost_ok_to_drop_table", order.GhostOkToDropTable),
+				zap.Bool("ghost_ok_to_drop_table", ghostOkToDropBatch),
 				zap.Bool("generate_rollback", generateRollbackBatch),
 				zap.String("sql_type", string(task.SQLType)),
 			)
@@ -1970,8 +2114,9 @@ func (h *OrderHandler) executeAllTasks(c *gin.Context, orderID string, username 
 				OrderID:            order.OrderID.String(),
 				TaskID:             task.TaskID.String(),
 				ExportFileFormat:   string(order.ExportFileFormat),
-				GhostOkToDropTable: order.GhostOkToDropTable,
+				GhostOkToDropTable: ghostOkToDropBatch,
 				GenerateRollback:   generateRollbackBatch,
+				DDLExecutionMode:   string(order.DDLExecutionMode),
 			}
 
 			// 创建执行器

@@ -12,6 +12,8 @@ import {
   NGi,
   NGrid,
   NInput,
+  NRadio,
+  NRadioGroup,
   NSelect,
   NSpace,
   NSwitch,
@@ -35,7 +37,8 @@ import {
   fetchOrdersSchemas,
   fetchOrdersUsers,
   fetchOrderTables,
-  fetchSyntaxCheck
+  fetchSyntaxCheck,
+  fetchCheckDDL
 } from '@/service/api/orders';
 import { useAppStore } from '@/store/modules/app';
 
@@ -49,6 +52,7 @@ const sqlType = ref<string>('DDL');
 const pageTitle = computed(() => `提交${sqlType.value}工单`);
 const isExportOrder = computed(() => sqlType.value.toLowerCase() === 'export');
 const isDMLOrder = computed(() => sqlType.value.toUpperCase() === 'DML');
+const isDDLOrder = computed(() => sqlType.value.toUpperCase() === 'DDL');
 
 // 表单模型
 interface FormModel {
@@ -67,6 +71,7 @@ interface FormModel {
   content: string;
   scheduleTime?: string | null;
   generateRollback?: boolean; // DML 是否生成回滚语句，默认 true
+  ddlExecutionMode?: 'ghost' | 'direct'; // DDL 执行方式：ghost=gh-ost，direct=直接 ALTER
 }
 
 const formModel = reactive<FormModel>({
@@ -84,7 +89,8 @@ const formModel = reactive<FormModel>({
   cc: [],
   content: '',
   scheduleTime: null,
-  generateRollback: true // DML 默认生成回滚语句
+  generateRollback: true,
+  ddlExecutionMode: 'ghost' // DDL 默认 gh-ost，无主键/唯一键时需选直接 ALTER
 });
 
 // 下拉数据源
@@ -666,6 +672,8 @@ function formatSQL() {
 const syntaxRows = ref<any[]>([]);
 const syntaxStatus = ref<number | null>(null);
 const showFingerprint = ref(false);
+/** DDL 且执行方式为 gh-ost 时，语法检查阶段会预检表是否有主键/唯一键，无则在此列出 */
+const ddlTablesWithoutPK = ref<string[]>([]);
 
 // 计算提交按钮是否应该禁用
 const isSubmitDisabled = computed(() => {
@@ -737,6 +745,7 @@ async function syntaxCheck() {
   checking.value = true;
   syntaxStatus.value = null;
   syntaxRows.value = [];
+  ddlTablesWithoutPK.value = [];
   try {
     const data = {
       db_type: formModel.dbType,
@@ -749,30 +758,39 @@ async function syntaxCheck() {
     console.log('语法检查响应:', resp);
 
     // createFlatRequest 返回 { data, error, response } 格式
-    // 错误时: data=null, error=AxiosError
-    // 成功时: data=响应数据, error=null
-    
-    // 检查是否有错误（error 不为 null 或 data 为 null）
     if (resp.error || resp.data === null || resp.data === undefined) {
-      // 请求失败
       syntaxStatus.value = 1;
-      // 尝试从错误响应中获取详细数据用于展示
       const errorData = resp.error?.response?.data?.data ?? resp.response?.data?.data ?? [];
       syntaxRows.value = Array.isArray(errorData) ? errorData : [];
-      // 错误消息已由全局拦截器显示，不再重复
       return;
     }
 
-    // 请求成功，data 格式：{status: 0/1, data: [...]}（与老服务一致）
     const resultData = resp.data?.data ?? [];
     syntaxRows.value = Array.isArray(resultData) ? resultData : [];
-    
-    // 检查 status 字段（与老服务一致）
-    // status: 0表示语法检查通过，1表示语法检查不通过
-    const status = resp.data?.status ?? 1; // 默认不通过
+    const status = resp.data?.status ?? 1;
     syntaxStatus.value = status;
-    
-    if (status === 0) {
+
+    // DDL 且执行方式为 gh-ost 时，在语法检查阶段预检表是否有主键/唯一键
+    if (sqlType.value.toUpperCase() === 'DDL' && formModel.ddlExecutionMode === 'ghost') {
+      try {
+        const checkRes: any = await fetchCheckDDL({
+          instance_id: formModel.instanceId!,
+          schema: formModel.schema!,
+          content: formModel.content
+        });
+        const list = (checkRes?.data ?? checkRes)?.tables_without_pk_or_uk ?? [];
+        ddlTablesWithoutPK.value = Array.isArray(list) ? list : [];
+        if (ddlTablesWithoutPK.value.length > 0) {
+          syntaxStatus.value = 1;
+          message.warning('以下表无主键或唯一键，无法使用无锁变更，请选择「直接 ALTER」或先为表添加主键/唯一键');
+        }
+      } catch (_) {
+        // 预检失败不影响语法检查结果，仅清空列表
+        ddlTablesWithoutPK.value = [];
+      }
+    }
+
+    if (syntaxStatus.value === 0) {
       message.success('语法检查通过，您可以提交工单了，O(∩_∩)O');
     } else {
       message.warning('语法检查未通过，请修复问题后重新检查');
@@ -827,9 +845,12 @@ async function submitOrder() {
       content: formModel.content,
       schedule_time: formModel.scheduleTime
     };
-    // DML 工单：明确传是否生成回滚（true/false），避免被序列化省略导致后端收到默认 true）
     if (sqlType.value.toUpperCase() === 'DML') {
       payload.generate_rollback = formModel.generateRollback === true;
+    }
+    // DDL 工单：必传执行方式 ghost 或 direct，整单单一方式
+    if (sqlType.value.toUpperCase() === 'DDL') {
+      payload.ddl_execution_mode = formModel.ddlExecutionMode || 'ghost';
     }
 
     const res: any = await fetchCreateOrder(payload as any);
@@ -965,6 +986,17 @@ watch(
                   <NSwitch v-model:value="formModel.generateRollback" />
                   <span class="ml-8px text-12px text-gray-500">开启后将生成回滚语句，便于误操作后恢复</span>
                 </NFormItem>
+                <NFormItem v-if="isDDLOrder" label="执行方式" required>
+                  <div class="flex flex-col gap-8px">
+                    <NRadioGroup v-model:value="formModel.ddlExecutionMode" class="inline-flex flex-nowrap gap-16px">
+                      <NRadio value="ghost"><span class="whitespace-nowrap">无锁变更</span></NRadio>
+                      <NRadio value="direct"><span class="whitespace-nowrap">直接 ALTER</span></NRadio>
+                    </NRadioGroup>
+                    <div class="text-12px text-gray-500 leading-normal max-w-420px">
+                      无锁变更：不锁表，表需有主键或唯一键；直接 ALTER：可能短暂锁表，适用于无主键表
+                    </div>
+                  </div>
+                </NFormItem>
                 <NFormItem label="定时执行">
                   <NDatePicker
                     v-model:formatted-value="formModel.scheduleTime"
@@ -1021,8 +1053,12 @@ watch(
         </NGi>
       </NGrid>
     </NCard>
-    <NCard v-if="syntaxRows.length" title="语法检查结果" :style="{ marginTop: appStore.isMobile ? '8px' : '12px' }" :content-style="{ padding: appStore.isMobile ? '8px' : '16px' }">
+    <NCard v-if="syntaxRows.length || ddlTablesWithoutPK.length" title="语法检查结果" :style="{ marginTop: appStore.isMobile ? '8px' : '12px' }" :content-style="{ padding: appStore.isMobile ? '8px' : '16px' }">
+      <NAlert v-if="ddlTablesWithoutPK.length" type="error" class="mb-12px">
+        以下表无主键或唯一键，无法使用无锁变更：{{ ddlTablesWithoutPK.join('、') }}。请选择「直接 ALTER」或先为表添加主键/唯一键后再提交。
+      </NAlert>
       <NDataTable
+        v-if="syntaxRows.length"
         :columns="visibleSyntaxColumns"
         :data="syntaxRows"
         :pagination="pagination"

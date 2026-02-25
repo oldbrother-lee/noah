@@ -172,10 +172,11 @@ const { columns, data, getData, getDataByPage, loading, mobilePagination, search
   },
   columns: () => [
     {
-      key: 'index',
-      title: $t('common.index'),
+      key: 'order_id',
+      title: '工单编号',
       align: 'center',
-      width: 64
+      width: 320,
+      ellipsis: { tooltip: true }
     },
     {
       key: 'progress',

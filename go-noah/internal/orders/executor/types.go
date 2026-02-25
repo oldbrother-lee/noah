@@ -16,6 +16,7 @@ type DBConfig struct {
 	ExportFileFormat   string // 导出文件格式
 	GhostOkToDropTable bool   // gh-ost执行成功后自动删除旧表
 	GenerateRollback   bool   // DML 是否生成回滚语句，仅 DML 有效
+	DDLExecutionMode   string // DDL 执行方式：ghost=gh-ost, direct=直接 ALTER，仅 DDL 有效
 }
 
 // ExportFile 导出文件信息

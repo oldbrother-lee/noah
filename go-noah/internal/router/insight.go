@@ -88,6 +88,7 @@ func InitInsightRouter(r gin.IRouter, jwt *jwt.JWT, e *casbin.SyncedEnforcer, lo
 			authRouter.GET("/orders/my", insight.OrderHandlerApp.GetMyOrders)
 			authRouter.GET("/orders/:order_id", insight.OrderHandlerApp.GetOrder)
 			authRouter.POST("/orders", insight.OrderHandlerApp.CreateOrder)
+			authRouter.POST("/orders/check-ddl", insight.OrderHandlerApp.CheckDDL)                       // DDL 预检：检查表是否有主键/唯一键（语法检查时调用）
 			authRouter.GET("/orders/tables/:instance_id/:schema", insight.OrderHandlerApp.GetOrderTables) // 工单场景获取表列表（不检查DAS权限）
 			authRouter.PUT("/orders/progress", insight.OrderHandlerApp.UpdateOrderProgress)
 			authRouter.POST("/orders/approve", insight.OrderHandlerApp.ApproveOrder) // 审批工单
