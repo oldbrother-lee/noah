@@ -90,10 +90,10 @@ llm:
 notify:
   notice_url: "https://noah.qixiangyun.com"  # 工单详情页面的基础URL
   wechat:
-    enable: false  # 是否启用企业微信通知
-    webhook: ""    # 企业微信机器人Webhook地址
+    enable: true  # 是否启用企业微信通知
+    webhook: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=912d828c-547d-4c4f-ba02-b4b530e6cd6f"    # 企业微信机器人Webhook地址
   dingtalk:
-    enable: true  # 是否启用钉钉通知
+    enable: false  # 是否启用钉钉通知
     webhook: "https://oapi.dingtalk.com/robot/send?access_token=0a92f07769ec3c3da63676e5b95b607ae678286e080000a09cbbda5ea0ec4a5f"    # 钉钉机器人Webhook地址
     keywords: ""   # 钉钉关键词（可选）
   mail:

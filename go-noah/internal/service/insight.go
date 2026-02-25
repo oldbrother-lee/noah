@@ -692,7 +692,7 @@ func (s *InsightService) ExecuteOrder(ctx context.Context, orderID string, usern
 				// 如果有流程实例且已调用 ApproveTask，syncOrderStatusOnFlowCompleted 已经发送了通知，这里不再重复发送
 				if !hasFlowInstance {
 					msg := fmt.Sprintf("您好，工单已经执行完成，请悉知\n>工单标题：%s", order.Title)
-					notifier.SendOrderNotification(order.OrderID.String(), order.Title, order.Applicant, []string{}, msg)
+					notifier.SendOrderNotification(order.OrderID.String(), order.Title, order.Applicant, nil, msg, true)
 				}
 			}()
 		}

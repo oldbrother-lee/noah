@@ -68,23 +68,20 @@ func (w *WechatNotifier) SendMessage(subject string, users []string, msg string)
 		}
 	}
 
-	// 使用 markdown 消息类型
-	markdownContent := map[string]interface{}{
+	// 使用 text 消息类型：PC 端聊天里的文本链接会走默认浏览器，markdown 类型链接会走内置浏览器
+	textContent := map[string]interface{}{
 		"content": msg,
 	}
-
-	// 优先使用 userid 列表（mentioned_list）
 	if len(mentionedUserIds) > 0 {
-		markdownContent["mentioned_list"] = mentionedUserIds
+		textContent["mentioned_list"] = mentionedUserIds
 	}
-	// 如果有手机号列表，也添加（mentioned_mobile_list），作为备用
 	if len(mentionedMobiles) > 0 {
-		markdownContent["mentioned_mobile_list"] = mentionedMobiles
+		textContent["mentioned_mobile_list"] = mentionedMobiles
 	}
 
 	payload := map[string]interface{}{
-		"msgtype":  "markdown",
-		"markdown": markdownContent,
+		"msgtype": "text",
+		"text":   textContent,
 	}
 
 	messageJSON, err := json.Marshal(payload)
@@ -254,12 +251,13 @@ func SendMessage(subject, orderID string, users []string, msg string) {
 		return
 	}
 
-	// 获取通知URL
+	// 获取通知 URL
 	noticeURL := conf.GetString("notify.notice_url")
 	if noticeURL == "" {
 		noticeURL = "http://localhost:8000"
 	}
 	orderURL := fmt.Sprintf("%s/das/orders-detail/%s", noticeURL, orderID)
+	// 纯 URL：企业微信用 text 类型 + 纯 URL，PC 端点击会走默认浏览器（markdown 链接会走内置浏览器）
 	msg = fmt.Sprintf("%s\n\n工单地址：%s", msg, orderURL)
 
 	// 去重用户列表
@@ -268,7 +266,7 @@ func SendMessage(subject, orderID string, users []string, msg string) {
 		return
 	}
 
-	// 发送企业微信消息
+	// 发送企业微信消息（text 类型 + 纯 URL，PC 端点击走默认浏览器）
 	if conf.GetBool("notify.wechat.enable") {
 		webhook := conf.GetString("notify.wechat.webhook")
 		if webhook != "" {
@@ -344,24 +342,24 @@ func SendMessage(subject, orderID string, users []string, msg string) {
 }
 
 // SendOrderNotification 发送工单通知（封装常用场景）
-// applicant: 申请人用户名
-func SendOrderNotification(orderID, title, applicant string, receivers []string, msg string) {
+// applicant: 申请人用户名；receivers: 要 @ 的用户名列表；includeApplicant: 为 true 时会把申请人加入 @ 列表（驳回/执行完成只 @ 申请人时传 true）
+func SendOrderNotification(orderID, title, applicant string, receivers []string, msg string, includeApplicant bool) {
 	// 获取申请人昵称
 	applicantNickname := getApplicantNickname(applicant)
 
 	// 如果获取到昵称，替换消息中的申请人用户名为其昵称
-	// 使用更精确的替换方式，避免误替换其他用户名
 	if applicantNickname != "" && applicant != "" {
-		// 替换 "用户{申请人用户名}" 为 "用户{申请人昵称}"
 		msg = strings.ReplaceAll(msg, "用户"+applicant, "用户"+applicantNickname)
-		// 替换 "{申请人用户名}提交了工单" 为 "{申请人昵称}提交了工单"
 		msg = strings.ReplaceAll(msg, applicant+"提交了工单", applicantNickname+"提交了工单")
-		// 替换 "{申请人用户名}创建了工单" 为 "{申请人昵称}创建了工单"
 		msg = strings.ReplaceAll(msg, applicant+"创建了工单", applicantNickname+"创建了工单")
 	}
 
-	// 确保申请人也在接收列表中（使用用户名，因为通知系统需要用户名）
-	allReceivers := append([]string{applicant}, receivers...)
+	var allReceivers []string
+	if includeApplicant {
+		allReceivers = append([]string{applicant}, receivers...)
+	} else {
+		allReceivers = receivers
+	}
 	SendMessage(title, orderID, allReceivers, msg)
 }
 
@@ -384,6 +382,72 @@ func getApplicantNickname(username string) string {
 	}
 
 	return ""
+}
+
+// GetReceiversFromOrder 从工单的 Approver/Executor/Reviewer/CC JSON 中解析出用户名列表，用于 @ 对应负责人
+func GetReceiversFromOrder(approver, executor, reviewer, cc []byte) []string {
+	var usernames []string
+	collect := func(data []byte) {
+		if len(data) == 0 {
+			return
+		}
+		var arr []interface{}
+		if err := json.Unmarshal(data, &arr); err != nil {
+			return
+		}
+		for _, v := range arr {
+			switch t := v.(type) {
+			case string:
+				if t != "" {
+					usernames = append(usernames, t)
+				}
+			case map[string]interface{}:
+				if u, ok := t["user"].(string); ok && u != "" {
+					usernames = append(usernames, u)
+				}
+			}
+		}
+	}
+	collect(approver)
+	collect(executor)
+	collect(reviewer)
+	collect(cc)
+	return utils.RemoveDuplicate(usernames)
+}
+
+// parseUserNamesFromJSON 从单个 JSON 数组字段解析出用户名列表（与 GetReceiversFromOrder 中逻辑一致）
+func parseUserNamesFromJSON(data []byte) []string {
+	var usernames []string
+	if len(data) == 0 {
+		return usernames
+	}
+	var arr []interface{}
+	if err := json.Unmarshal(data, &arr); err != nil {
+		return usernames
+	}
+	for _, v := range arr {
+		switch t := v.(type) {
+		case string:
+			if t != "" {
+				usernames = append(usernames, t)
+			}
+		case map[string]interface{}:
+			if u, ok := t["user"].(string); ok && u != "" {
+				usernames = append(usernames, u)
+			}
+		}
+	}
+	return utils.RemoveDuplicate(usernames)
+}
+
+// GetApproversFromOrder 仅解析工单的 Approver 字段，用于「提交时只 @ 审核人」
+func GetApproversFromOrder(approver []byte) []string {
+	return parseUserNamesFromJSON(approver)
+}
+
+// GetExecutorsFromOrder 仅解析工单的 Executor 字段，用于「审批通过后只 @ 执行人」
+func GetExecutorsFromOrder(executor []byte) []string {
+	return parseUserNamesFromJSON(executor)
 }
 
 // getUserInfos 批量查询用户信息（用户名、手机号、昵称）

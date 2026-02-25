@@ -926,6 +926,8 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		// 从流程实例中获取审批人、执行人等信息
 		var approvers, reviewers, executors []string
 		var receivers []string
+		// 仅审核人用户名，用于「提交时只 @ 下一段负责人（审核人）」
+		var approverReceivers []string
 
 		if flowResp != nil && flowResp.FlowInstanceID > 0 {
 			// 获取流程实例的待处理任务（审批人）
@@ -943,12 +945,13 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 					// 根据节点代码分类
 					if strings.Contains(task.NodeCode, "approval") || strings.Contains(task.NodeName, "审批") {
 						approvers = append(approvers, displayName)
+						approverReceivers = append(approverReceivers, task.Assignee)
 					} else if strings.Contains(task.NodeCode, "review") || strings.Contains(task.NodeName, "复核") {
 						reviewers = append(reviewers, displayName)
 					} else if strings.Contains(task.NodeCode, "execute") || strings.Contains(task.NodeName, "执行") {
 						executors = append(executors, displayName)
 					}
-					// receivers 使用用户名（用于通知系统）
+					// receivers 使用用户名（用于其他逻辑，通知改用 approverReceivers）
 					receivers = append(receivers, task.Assignee)
 				}
 			}
@@ -967,12 +970,12 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 						if approvalNode != nil {
 							approverUsers := h.getUsersFromFlowNode(ctx, approvalNode)
 							approvers = append(approvers, approverUsers...)
-							// receivers 需要用户名，根据昵称查询用户名
+							// receivers / approverReceivers 需要用户名
 							for _, nickname := range approverUsers {
-								// 根据昵称查询用户名（用于通知系统）
 								var adminUser model.AdminUser
 								if err := global.DB.WithContext(ctx).Where("nickname = ?", nickname).First(&adminUser).Error; err == nil {
 									receivers = append(receivers, adminUser.Username)
+									approverReceivers = append(approverReceivers, adminUser.Username)
 								}
 							}
 						}
@@ -981,12 +984,9 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 					if len(executors) == 0 {
 						executeNode, _ := flowRepo.GetFlowNodeByCode(ctx, flowDef.ID, "dba_execute")
 						if executeNode != nil {
-							// 根据执行节点的配置获取执行人列表（返回昵称）
 							executorUsers := h.getUsersFromFlowNode(ctx, executeNode)
 							executors = append(executors, executorUsers...)
-							// receivers 需要用户名，根据昵称查询用户名
 							for _, nickname := range executorUsers {
-								// 根据昵称查询用户名（用于通知系统）
 								var adminUser model.AdminUser
 								if err := global.DB.WithContext(ctx).Where("nickname = ?", nickname).First(&adminUser).Error; err == nil {
 									receivers = append(receivers, adminUser.Username)
@@ -1001,6 +1001,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		// 如果流程中没有找到，尝试从请求参数中获取（兼容旧数据）
 		if len(approvers) == 0 {
 			approvers = req.Approver
+			approverReceivers = append(approverReceivers, req.Approver...)
 		}
 		if len(reviewers) == 0 {
 			reviewers = req.Reviewer
@@ -1061,8 +1062,9 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 			order.OrderID.String(),
 			order.Title,
 			username,
-			receivers,
+			utils.RemoveDuplicate(approverReceivers),
 			msg,
+			false, // 提交时只 @ 下一段负责人（审核人），不 @ 申请人
 		)
 	}()
 
@@ -1980,7 +1982,7 @@ func (h *OrderHandler) updateOrderStatusToFinish(ctx context.Context, orderID st
 		// 如果有流程实例且已调用 ApproveTask，syncOrderStatusOnFlowCompleted 已经发送了通知，这里不再重复发送
 		if !hasFlowInstance {
 			msg := fmt.Sprintf("您好，工单已经执行完成，请悉知\n>工单标题：%s", order.Title)
-			notifier.SendOrderNotification(order.OrderID.String(), order.Title, order.Applicant, []string{}, msg)
+			notifier.SendOrderNotification(order.OrderID.String(), order.Title, order.Applicant, nil, msg, true)
 		}
 	}()
 }

@@ -478,7 +478,8 @@ func (s *FlowService) ApproveTask(ctx context.Context, req *api.ApproveTaskReque
 			order, err := InsightServiceApp.GetOrderByID(context.Background(), instance.BusinessID)
 			if err == nil && order != nil {
 				msg := fmt.Sprintf("您好，%s审批通过了工单\n>工单标题：%s\n>附加消息：%s", req.Operator, order.Title, req.Comment)
-				notifier.SendOrderNotification(order.OrderID.String(), order.Title, order.Applicant, []string{}, msg)
+				receivers := notifier.GetExecutorsFromOrder([]byte(order.Executor))
+				notifier.SendOrderNotification(order.OrderID.String(), order.Title, order.Applicant, receivers, msg, true) // @ 执行人 + 申请人
 			}
 		}()
 	}
@@ -532,12 +533,12 @@ func (s *FlowService) RejectTask(ctx context.Context, req *api.RejectTaskRequest
 	if instance != nil && (instance.BusinessType == "order_ddl" || instance.BusinessType == "order_dml" || instance.BusinessType == "order_export") {
 		_ = InsightServiceApp.UpdateOrderProgress(ctx, instance.BusinessID, insight.ProgressRejected)
 
-		// 发送通知：审批驳回，通知申请人
+		// 发送通知：审批驳回，只 @ 申请人
 		go func() {
 			order, err := InsightServiceApp.GetOrderByID(context.Background(), instance.BusinessID)
 			if err == nil && order != nil {
 				msg := fmt.Sprintf("您好，%s驳回了工单\n>工单标题：%s\n>附加消息：%s", req.Operator, order.Title, req.Comment)
-				notifier.SendOrderNotification(order.OrderID.String(), order.Title, order.Applicant, []string{}, msg)
+				notifier.SendOrderNotification(order.OrderID.String(), order.Title, order.Applicant, nil, msg, true)
 			}
 		}()
 	}
@@ -645,12 +646,12 @@ func (s *FlowService) syncOrderStatusOnFlowCompleted(ctx context.Context, instan
 		return
 	}
 
-	// 发送通知：工单完成，通知申请人
+	// 发送通知：工单完成，只 @ 申请人
 	go func() {
 		order, err := InsightServiceApp.GetOrderByID(context.Background(), instance.BusinessID)
 		if err == nil && order != nil {
 			msg := fmt.Sprintf("您好，工单已经执行完成，请悉知\n>工单标题：%s", order.Title)
-			notifier.SendOrderNotification(order.OrderID.String(), order.Title, order.Applicant, []string{}, msg)
+			notifier.SendOrderNotification(order.OrderID.String(), order.Title, order.Applicant, nil, msg, true)
 		}
 	}()
 }
