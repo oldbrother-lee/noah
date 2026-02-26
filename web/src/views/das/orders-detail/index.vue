@@ -200,6 +200,33 @@ const handleFormatSQL = () => {
   }
 };
 
+// 复制 SQL 内容到剪贴板
+const handleCopySql = async () => {
+  const text = localSqlContent.value || orderDetail.value?.content || '';
+  if (!text.trim()) {
+    message.warning('暂无内容可复制');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    message.success('已复制到剪贴板');
+  } catch (e) {
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      message.success('已复制到剪贴板');
+    } catch (err) {
+      message.error('复制失败');
+    }
+  }
+};
+
 const handleSyntaxCheck = async () => {
   if (!orderDetail.value) return;
   checking.value = true;
@@ -2538,6 +2565,12 @@ const submitHook = async () => {
               <NTabs v-model:value="activeTab" type="line" animated @update:value="handleTabChange">
                 <template #suffix>
                   <NSpace v-if="activeTab === 'sql-content'" align="center" :size="appStore.isMobile ? 6 : 12" :wrap="appStore.isMobile">
+                    <NButton :size="appStore.isMobile ? 'tiny' : 'small'" type="primary" secondary @click="handleCopySql">
+                      <template v-if="appStore.isMobile" #icon>
+                        <div class="i-ant-design:copy-outlined" />
+                      </template>
+                      <span v-if="!appStore.isMobile">复制</span>
+                    </NButton>
                     <NButton :size="appStore.isMobile ? 'tiny' : 'small'" type="primary" secondary @click="handleFormatSQL">
                       <template v-if="appStore.isMobile" #icon>
                         <div class="i-ant-design:format-painter-outlined" />

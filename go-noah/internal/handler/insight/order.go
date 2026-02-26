@@ -297,11 +297,12 @@ type GetOrdersRequest struct {
 	PageSize    int    `form:"size"`    // 前端用 size
 	OnlyMyOrder int    `form:"only_my_orders"`
 	Applicant   string `form:"applicant"`
-	Progress    string `form:"progress"`
+	Progress    string `form:"progress"` // 前端可能传 status，在 handler 中做兼容
 	Environment int    `form:"environment"`
 	SQLType     string `form:"sql_type"`
 	DBType      string `form:"db_type"`
 	Title       string `form:"title"`
+	Search      string `form:"search"` // 关键词：工单标题或申请人模糊匹配
 }
 
 // GetOrders 获取工单列表
@@ -349,15 +350,22 @@ func (h *OrderHandler) GetOrders(c *gin.Context) {
 		applicant = req.Applicant
 	}
 
+	// 前端可能传 status，兼容为 progress
+	progress := req.Progress
+	if progress == "" && c.Query("status") != "" {
+		progress = c.Query("status")
+	}
+
 	params := &insightRepo.OrderQueryParams{
 		Page:        req.Page,
 		PageSize:    req.PageSize,
 		Applicant:   applicant,
-		Progress:    req.Progress,
+		Progress:    progress,
 		Environment: req.Environment,
 		SQLType:     req.SQLType,
 		DBType:      req.DBType,
 		Title:       req.Title,
+		Search:      req.Search,
 	}
 
 	orders, total, err := service.InsightServiceApp.GetOrders(c.Request.Context(), params)

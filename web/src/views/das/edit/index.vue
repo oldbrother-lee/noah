@@ -19,6 +19,7 @@ import { foldGutter, foldKeymap, syntaxHighlighting, defaultHighlightStyle } fro
 import { oneDark } from '@codemirror/theme-one-dark';
 import { autocompletion, completionKeymap } from '@codemirror/autocomplete';
 import { useRouter } from 'vue-router';
+import dayjs from 'dayjs';
 // 静态导入 vxe-table，随 DAS 编辑页 chunk 一起加载，避免分包后动态 import 未完成导致表格不渲染
 // 使用 named 导入表格与列组件，在模板中按 PascalCase 使用，避免全局注册时机导致 resolve 失败
 import VxeTableLib, { VxeTable, VxeColumn } from 'vxe-table';
@@ -36,13 +37,52 @@ const selectedSchema = ref<any>({});
 const activeKey = ref(localStorage.getItem('dms-active-key') || '1');
 const newTabIndex = ref(Number(localStorage.getItem('dms-new-tab-index')) || 2);
 const tabCompletion = ref<any>({});
-// 改用网格布局管理左右区域占比，移动端自适应
+// 左侧面板可拖拽宽度（仅桌面端），向左拖到小于阈值时自动折叠
+const LEFT_PANEL_MIN = 200;
+const LEFT_PANEL_MAX = 560;
+const LEFT_PANEL_COLLAPSE_THRESHOLD = 160;
+const DEFAULT_LEFT_WIDTH = 280;
+function loadLeftPanelWidth(): number {
+  try {
+    const v = Number(localStorage.getItem('dms-left-panel-width'));
+    if (!Number.isNaN(v) && v >= LEFT_PANEL_MIN && v <= LEFT_PANEL_MAX) return v;
+  } catch (_) {}
+  return DEFAULT_LEFT_WIDTH;
+}
+const leftPanelWidthPx = ref(loadLeftPanelWidth());
+const resizeStartX = ref(0);
+const resizeStartWidth = ref(0);
+function onResizeLeftMove(e: MouseEvent) {
+  const dx = e.clientX - resizeStartX.value;
+  let w = resizeStartWidth.value + dx;
+  if (w < LEFT_PANEL_COLLAPSE_THRESHOLD) {
+    showLeftPanel.value = false;
+    document.removeEventListener('mousemove', onResizeLeftMove as any);
+    document.removeEventListener('mouseup', onResizeLeftUp);
+    return;
+  }
+  w = Math.max(LEFT_PANEL_MIN, Math.min(LEFT_PANEL_MAX, w));
+  leftPanelWidthPx.value = w;
+  try {
+    localStorage.setItem('dms-left-panel-width', String(w));
+  } catch (_) {}
+}
+function onResizeLeftUp() {
+  document.removeEventListener('mousemove', onResizeLeftMove as any);
+  document.removeEventListener('mouseup', onResizeLeftUp);
+}
+function initResizeLeft(e: MouseEvent) {
+  resizeStartX.value = e.clientX;
+  resizeStartWidth.value = leftPanelWidthPx.value;
+  document.addEventListener('mousemove', onResizeLeftMove as any);
+  document.addEventListener('mouseup', onResizeLeftUp);
+}
 const rightSpan = computed(() => {
-  if (appStore.isMobile) return 24; // 移动端全宽
+  if (appStore.isMobile) return 24;
   return showLeftPanel.value ? 17 : 24;
 });
 const leftSpan = computed(() => {
-  if (appStore.isMobile) return 0; // 移动端不显示左侧面板
+  if (appStore.isMobile) return 0;
   return showLeftPanel.value ? 7 : 0;
 });
 
@@ -176,6 +216,10 @@ interface EditorPane {
   theme: string;
   result?: any;
   loading?: boolean;
+  /** 执行开始时间戳，用于计时显示 */
+  executingStartTime?: number;
+  /** 执行已用秒数（由定时器更新） */
+  executingElapsed?: number;
   responseMsg?: string;
   pagination?: {
     currentPage: number;
@@ -199,6 +243,18 @@ watch(
   { deep: true }
 );
 
+// 用户清空库选择时移除持久化，下次不自动恢复
+watch(
+  () => bindTitle.value,
+  (v) => {
+    if (!v) {
+      try {
+        localStorage.removeItem('dms-selected-schema');
+      } catch (_) {}
+    }
+  }
+);
+
 const defaultPageSize = 20;
 const pageSizes = [10, 20, 50, 100];
 
@@ -218,6 +274,7 @@ const schemaError = ref<string | null>(null);
 // OS Detection for Tooltip
 const isMac = navigator.userAgent.includes('Mac');
 const executeTooltip = computed(() => isMac ? '执行 Cmd+Enter' : '执行 Control+Enter');
+const executeGutterTooltip = computed(() => (isMac ? '点击执行选中的 SQL (Cmd+Enter)' : '点击执行选中的 SQL (Ctrl+Enter)'));
 
 // CodeMirror: per-pane editor实例及可重配置主题
 const editorViews = ref<Record<string, EditorView | null>>({});
@@ -719,23 +776,33 @@ class ExecuteMarker extends GutterMarker {
   toDOM() {
     const div = document.createElement('div');
     div.style.cursor = 'pointer';
-    div.style.color = '#18a058'; // Use green color similar to Naive UI primary
+    div.style.color = 'var(--n-primary-color, #18a058)';
     div.style.display = 'flex';
     div.style.justifyContent = 'center';
     div.style.alignItems = 'center';
+    div.style.gap = '4px';
     div.style.width = '100%';
     div.style.height = '100%';
+    div.style.minWidth = '44px';
     div.style.pointerEvents = 'auto';
-    div.title = executeTooltip.value; // Add tooltip
-    
-    // Use a filled SVG icon for better visibility
-    div.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
-    
-    // Add hover effect via JS since we are in a component
-    div.onmouseenter = () => { div.style.color = '#36ad6a'; div.style.transform = 'scale(1.1)'; div.style.transition = 'all 0.2s'; };
-    div.onmouseleave = () => { div.style.color = '#18a058'; div.style.transform = 'scale(1)'; };
+    div.style.fontSize = '12px';
+    div.style.whiteSpace = 'nowrap';
+    div.title = executeGutterTooltip.value;
 
-    // Use mousedown to prevent editor selection interference and ensure event capture
+    // 与主按钮一致的闪电图标 + 文案「执行」，更易识别
+    div.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 32 32" fill="currentColor"><path d="M11.61 29.92a1 1 0 0 1-.6-1.07L12.83 17H8a1 1 0 0 1-.92-1.38l7-13a1 1 0 0 1 1.78 0l7 13A1 1 0 0 1 24 17h-4.83L21 28.85a1 1 0 0 1-1.54 1.07l-7.1-6.5a1 1 0 0 1-.75-.5z"/></svg><span>执行</span></span>`;
+
+    div.onmouseenter = () => {
+      div.style.color = 'var(--n-primary-color-hover, #36ad6a)';
+      div.style.backgroundColor = 'var(--n-primary-color-suppl, rgba(24, 160, 88, 0.12))';
+      div.style.borderRadius = '4px';
+      div.style.transition = 'all 0.15s';
+    };
+    div.onmouseleave = () => {
+      div.style.color = 'var(--n-primary-color, #18a058)';
+      div.style.backgroundColor = '';
+    };
+
     div.onmousedown = (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -991,18 +1058,32 @@ const getSchemas = async () => {
   try {
     const { data } = await fetchSchemas();
     schemas.value = data || [];
+    // 多 tab 切换回来时恢复上次选择的库
+    try {
+      const saved = localStorage.getItem(DMS_SELECTED_SCHEMA_KEY);
+      if (saved && schemas.value.some((s: any) => `${s.instance_id}#${s.schema}#${s.db_type}` === saved)) {
+        bindTitle.value = saved;
+        await getTables(saved);
+      }
+    } catch (_) {}
   } catch (error) {
     window.$message?.error('加载库列表失败');
   }
 };
 
+const DMS_SELECTED_SCHEMA_KEY = 'dms-selected-schema';
+
 const getTables = async (value: string) => {
+  if (!value || !value.includes('#')) return;
   searchTreeData.value = [];
   showSearch.value = true;
   treeLoading.value = true;
   leftTableSearch.value = '';
   schemaError.value = null;
-  
+  try {
+    localStorage.setItem(DMS_SELECTED_SCHEMA_KEY, value);
+  } catch (_) {}
+
   const vals = value.split('#');
   selectedSchema.value = {
     instance_id: vals[0],
@@ -1258,7 +1339,10 @@ const executeMySQLQuery = async (pane: EditorPane, data: any) => {
   
   const resMsgs: string[] = [];
   pane.loading = true;
-  
+  pane.executingStartTime = Date.now();
+  pane.executingElapsed = 0;
+  pane.bottomActiveTab = 'result';
+
   try {
     const response = await fetchExecuteMySQLQuery(data);
 
@@ -1269,7 +1353,7 @@ const executeMySQLQuery = async (pane: EditorPane, data: any) => {
     const respData = response.data as any;
     
     resMsgs.push('结果: 执行成功');
-    resMsgs.push(`耗时: ${respData?.duration || '-'}`);
+    resMsgs.push(`耗时: ${formatDuration(respData?.duration)}`);
     resMsgs.push(`SQL: ${respData?.sqltext || data.sqltext}`);
     resMsgs.push(`请求ID: ${(response as any).request_id || '-'}`);
     
@@ -1334,7 +1418,10 @@ const executeClickHouseQuery = async (pane: EditorPane, data: any) => {
   
   const resMsgs: string[] = [];
   pane.loading = true;
-  
+  pane.executingStartTime = Date.now();
+  pane.executingElapsed = 0;
+  pane.bottomActiveTab = 'result';
+
   try {
     const response = await fetchExecuteClickHouseQuery(data);
 
@@ -1345,7 +1432,7 @@ const executeClickHouseQuery = async (pane: EditorPane, data: any) => {
     const respData = response.data as any;
     
     resMsgs.push('结果: 执行成功');
-    resMsgs.push(`耗时: ${respData?.duration || '-'}`);
+    resMsgs.push(`耗时: ${formatDuration(respData?.duration)}`);
     resMsgs.push(`SQL: ${respData?.sqltext || data.sqltext}`);
     resMsgs.push(`请求ID: ${(response as any).request_id || '-'}`);
     
@@ -1422,7 +1509,8 @@ function getSqlToExecute(p: EditorPane): string {
 
 const executeSQL = (pane?: EditorPane) => {
   const p = pane || currentPane.value;
-  
+  if (p.loading) return;
+
   // Ensure editor is focused so selection remains visible/active
   const view = toRaw(editorViews.value[p.key]);
   view?.focus();
@@ -1819,6 +1907,19 @@ const getTableColumns = (pane: EditorPane) => {
   return tableColumns;
 };
 
+/** 格式化耗时显示，带单位 ms */
+/** 耗时自动换算单位：< 1000 用 ms，>= 1000 用 s（假定后端为毫秒） */
+const formatDuration = (duration: number | string | undefined | null): string => {
+  if (duration === undefined || duration === null || duration === '') return '-';
+  const n = typeof duration === 'number' ? duration : Number(duration);
+  if (Number.isNaN(n)) return String(duration);
+  if (n >= 1000) {
+    const s = n / 1000;
+    return s >= 10 ? `${Math.round(s)} s` : s % 1 === 0 ? `${s} s` : `${s.toFixed(2)} s`;
+  }
+  return n % 1 === 0 ? `${n} ms` : `${n.toFixed(2)} ms`;
+};
+
 const getTableData = (pane: EditorPane) => {
   // 检查缓存
   if (tableDataCache.has(pane)) {
@@ -1921,7 +2022,17 @@ const tableColumnCheckMap = computed<Record<string, boolean>>(() => {
 // 根据勾选状态返回可见列
 const getVisibleColumns = (pane: EditorPane) => {
   const columns = getTableColumns(pane);
-  return columns.filter((c: any) => tableColumnCheckMap.value[c.key] !== false);
+  return columns.filter((c: { key: string }) => tableColumnCheckMap.value[c.key] !== false);
+};
+
+// 执行结果区 NDataTable 用列配置（带类型，避免模板内隐式 any）
+const getResultTableColumns = (pane: EditorPane) => {
+  return getVisibleColumns(pane).map((c: { key: string; title?: string; minWidth?: number }) => ({
+    key: c.key,
+    title: c.title,
+    width: c.minWidth || 120,
+    ellipsis: { tooltip: true }
+  }));
 };
 
 // 更新表格列设置（保留已有勾选状态）
@@ -1936,6 +2047,90 @@ const updateTableColumnChecks = (pane: EditorPane) => {
     title: col.title as string,
     checked: Object.prototype.hasOwnProperty.call(oldMap, col.key) ? oldMap[col.key] : true
   }));
+};
+
+// 导出当前结果：CSV（业界常见，Excel 可直接打开，UTF-8 BOM）
+const exportResultAsCsv = (pane: EditorPane) => {
+  const cols = getVisibleColumns(pane);
+  const data = getTableData(pane);
+  if (!cols.length || !data.length) return;
+  const escape = (v: unknown): string => {
+    if (v === null || v === undefined) return '';
+    const s = String(v);
+    if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const header = cols.map((c: { key: string; title?: string }) => escape(c.title ?? c.key)).join(',');
+  const rows = data.map((row: Record<string, unknown>) =>
+    cols.map((c: { key: string }) => escape(row[c.key])).join(',')
+  );
+  const bom = '\uFEFF';
+  const csv = bom + header + '\r\n' + rows.join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `query_result_${dayjs().format('YYYY-MM-DD_HH-mm-ss')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+// 导出为 SQL：INSERT INTO 语句（表名占位，便于导入）
+const exportResultAsSql = (pane: EditorPane) => {
+  const cols = getVisibleColumns(pane);
+  const data = getTableData(pane);
+  if (!cols.length || !data.length) return;
+  const escapeSql = (v: unknown): string => {
+    if (v === null || v === undefined) return 'NULL';
+    const s = String(v);
+    return `'${s.replace(/'/g, "''").replace(/\\/g, '\\\\')}'`;
+  };
+  const tableName = 'exported_result';
+  const colList = cols.map((c: { key: string }) => `\`${String(c.key).replace(/`/g, '``')}\``).join(', ');
+  const lines: string[] = [`-- Exported ${data.length} row(s) at ${dayjs().format('YYYY-MM-DD HH:mm:ss')}`, `-- INSERT INTO ${tableName} (${colList}) VALUES`, ''];
+  const maxBatch = 50;
+  for (let i = 0; i < data.length; i += maxBatch) {
+    const chunk = data.slice(i, i + maxBatch);
+    const values = chunk.map((row: Record<string, unknown>) => `(${cols.map((c: { key: string }) => escapeSql(row[c.key])).join(', ')})`);
+    lines.push(`INSERT INTO ${tableName} (${colList}) VALUES ${values.join(', ')};`);
+  }
+  const sql = lines.join('\n');
+  const blob = new Blob([sql], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `query_result_${dayjs().format('YYYY-MM-DD_HH-mm-ss')}.sql`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+// 导出为 TXT：制表符分隔，UTF-8 BOM，便于 Excel/记事本打开
+const exportResultAsTxt = (pane: EditorPane) => {
+  const cols = getVisibleColumns(pane);
+  const data = getTableData(pane);
+  if (!cols.length || !data.length) return;
+  const escape = (v: unknown): string => {
+    if (v === null || v === undefined) return '';
+    const s = String(v);
+    return s.replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
+  };
+  const header = cols.map((c: { key: string; title?: string }) => escape(c.title ?? c.key)).join('\t');
+  const rows = data.map((row: Record<string, unknown>) => cols.map((c: { key: string }) => escape(row[c.key])).join('\t'));
+  const bom = '\uFEFF';
+  const txt = bom + header + '\r\n' + rows.join('\r\n');
+  const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `query_result_${dayjs().format('YYYY-MM-DD_HH-mm-ss')}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+const handleExportResult = (pane: EditorPane, key: string) => {
+  if (key === 'csv') exportResultAsCsv(pane);
+  else if (key === 'sql') exportResultAsSql(pane);
+  else if (key === 'txt') exportResultAsTxt(pane);
 };
 
 // 编辑器事件处理
@@ -2109,6 +2304,7 @@ watch(
   { deep: true }
 );
 
+let executingTimerId: ReturnType<typeof setInterval> | null = null;
 onMounted(async () => {
   const instance = getCurrentInstance();
   const app = instance?.appContext?.app;
@@ -2192,19 +2388,34 @@ onMounted(async () => {
     attributes: true,
     attributeFilter: ['class']
   });
+
+  // 执行中计时：每 100ms 更新一次已用时间
+  executingTimerId = setInterval(() => {
+    const now = Date.now();
+    panes.value.forEach(p => {
+      if (p.loading && p.executingStartTime != null) {
+        p.executingElapsed = (now - p.executingStartTime) / 1000;
+      }
+    });
+  }, 100);
 });
 
 onUnmounted(() => {
   darkModeObserver.disconnect();
+  if (executingTimerId != null) {
+    clearInterval(executingTimerId);
+    executingTimerId = null;
+  }
 });
 </script>
 
 <template>
-  <NCard size="small" class="das-page" :content-style="{ padding: appStore.isMobile ? '8px' : '12px' }" style="height: auto; min-height: calc(100vh - 120px)">
-    <NGrid cols="24" :x-gap="appStore.isMobile ? 8 : 12" :y-gap="appStore.isMobile ? 8 : 12" responsive="screen" style="height: 100%">
-      <!-- 桌面端左侧面板 -->
-      <NGi v-if="showLeftPanel && !appStore.isMobile" :span="leftSpan">
-        <NCard size="small" title="数据库选择" :segmented="{ content: true }" class="das-left-card" :style="leftContainerStyle" :content-style="{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }">
+  <NCard size="small" class="das-page" :content-style="{ padding: appStore.isMobile ? '6px' : '8px', height: '100%', overflow: 'hidden' }" style="height: calc(100vh - 120px); overflow: hidden;">
+    <!-- 主布局：桌面端左侧可拖拽，移动端仅右侧 -->
+    <div class="das-main-layout">
+      <template v-if="showLeftPanel && !appStore.isMobile">
+        <div class="das-left-resizable" :style="{ width: leftPanelWidthPx + 'px' }">
+          <NCard size="small" title="数据库选择" :segmented="{ content: true }" class="das-left-card das-left-card-fill" :content-style="{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }">
           <template #header-extra>
             <NSpace :size="6">
               <NTooltip trigger="hover" placement="top" :show-arrow="false">
@@ -2269,10 +2480,12 @@ onUnmounted(() => {
             </NScrollbar>
           </div>
         </NCard>
-      </NGi>
-      <NGi :span="rightSpan">
+        </div>
+        <div class="das-resize-handle" @mousedown.prevent="initResizeLeft" title="拖动调整宽度" />
+      </template>
+      <div class="das-right-resizable" :class="{ 'das-right-full': !showLeftPanel }">
         <div ref="rightContainerRef" class="das-right-container" style="display: flex; flex-direction: column; height: 100%; gap: 12px">
-          <NCard v-if="!showLeftPanel && !appStore.isMobile" size="small" class="das-ghost-card" :bordered="false">
+          <NCard v-if="!showLeftPanel" size="small" class="das-ghost-card" :bordered="false">
             <NButton quaternary size="small" @click="foldLeft">
               <template #icon><SvgIcon icon="line-md:menu-fold-right" /></template>
               展开数据库面板
@@ -2384,14 +2597,14 @@ onUnmounted(() => {
                       <NSpace :size="appStore.isMobile ? 4 : 6" wrap>
                         <NTooltip v-if="!appStore.isMobile" trigger="hover" :show-arrow="false">
                           <template #trigger>
-                            <NButton size="tiny" type="primary" :loading="pane.loading" @click="executeSQL(pane)">
+                            <NButton size="tiny" type="primary" :loading="pane.loading" :disabled="pane.loading" @click="executeSQL(pane)">
                               <template #icon><SvgIcon icon="carbon:flash" /></template>
                               执行 SQL
                             </NButton>
                           </template>
                           {{ executeTooltip }}
                         </NTooltip>
-                        <NButton v-else size="tiny" type="primary" :loading="pane.loading" @click="executeSQL(pane)">
+                        <NButton v-else size="tiny" type="primary" :loading="pane.loading" :disabled="pane.loading" @click="executeSQL(pane)">
                           <template #icon><SvgIcon icon="carbon:flash" /></template>
                         </NButton>
                         <NTooltip v-if="!appStore.isMobile" trigger="hover" :show-arrow="false">
@@ -2437,9 +2650,29 @@ onUnmounted(() => {
                         <div class="das-result-toolbar" style="margin-bottom: 8px;">
                           <NSpace justify="end">
                             <TableColumnSetting v-model:columns="tableColumnChecks" />
+                            <NDropdown
+                              :options="[
+                                { label: t('common.exportCsv'), key: 'csv' },
+                                { label: t('common.exportSql'), key: 'sql' },
+                                { label: t('common.exportTxt'), key: 'txt' }
+                              ]"
+                              :disabled="!pane.result || getTableColumns(pane).length === 0"
+                              @select="(key: string) => handleExportResult(pane, key)"
+                            >
+                              <NButton size="tiny" :disabled="!pane.result || getTableColumns(pane).length === 0">
+                                <template #icon>
+                                  <SvgIcon icon="carbon:download" />
+                                </template>
+                                {{ t('common.exportResult') }}
+                              </NButton>
+                            </NDropdown>
                           </NSpace>
                         </div>
-                        <div v-if="pane.result">
+                        <div v-if="pane.loading" key="loading" class="das-executing-wrap das-executing-simple">
+                          <NSpin size="small" />
+                          <span class="das-executing-text">执行中，请稍候… {{ (pane.executingElapsed ?? 0).toFixed(1) }}s</span>
+                        </div>
+                        <div v-else-if="pane.result" key="result">
                           <div v-if="getTableColumns(pane).length > 0">
                             <template v-if="vxeReady">
                               <VxeTable
@@ -2466,7 +2699,7 @@ onUnmounted(() => {
                               </VxeTable>
                               <NDataTable
                                 v-else
-                                :columns="getVisibleColumns(pane).map(c => ({ key: c.key, title: c.title, width: c.minWidth || 120, ellipsis: { tooltip: true } }))"
+                                :columns="getResultTableColumns(pane)"
                                 :data="getPagedTableData(pane)"
                                 :max-height="appStore.isMobile ? 300 : 400"
                                 size="small"
@@ -2480,7 +2713,7 @@ onUnmounted(() => {
                                 <NText type="success">执行成功</NText>
                                 <NText>当前返回 [{{ getTableData(pane).length }}] 行</NText>
                                 <SvgIcon icon="carbon:time" class="ml-8px text-16px text-#2080f0" />
-                                <NText type="info">耗时 [{{ pane.result?.duration ?? '-' }}]</NText>
+                                <NText type="info">耗时 [{{ formatDuration(pane.result?.duration) }}]</NText>
                               </div>
                               <NPagination
                                 v-model:page="pane.pagination!.currentPage"
@@ -2507,10 +2740,10 @@ onUnmounted(() => {
                             <NEmpty description="暂无查询结果" />
                           </div>
                         </div>
-                        <div v-else-if="pane.responseMsg && pane.responseMsg.includes('执行失败')" class="das-result-error">
+                        <div v-else-if="pane.responseMsg && pane.responseMsg.includes('执行失败')" key="error" class="das-result-error">
                           <div v-html="pane.responseMsg" style="padding: 16px; line-height: 1.8; color: #333;"></div>
                         </div>
-                        <div v-else class="das-empty-holder">
+                        <div v-else key="empty" class="das-empty-holder">
                           <NEmpty description="暂无查询结果" />
                         </div>
                       </div>
@@ -2521,8 +2754,8 @@ onUnmounted(() => {
             </NTabs>
           </NCard>
         </div>
-      </NGi>
-    </NGrid>
+      </div>
+    </div>
     
     <!-- 移动端左侧面板（全屏覆盖） -->
     <NCard
@@ -2621,12 +2854,61 @@ onUnmounted(() => {
 <style scoped>
 .das-page {
   height: calc(100vh - 120px);
+  /* 左、上、右缩小外边距；右侧由布局 global-content 对 das_edit 单独设 pr-8px 实现 */
+  margin: -8px -8px 0 -8px;
 }
 
+/* 主布局：左侧可拖拽 + 右侧 */
+.das-main-layout {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  min-height: 0;
+}
+.das-left-resizable {
+  flex-shrink: 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.das-left-card-fill {
+  height: 100% !important;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.das-left-card-fill :deep(.n-card__content) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.das-resize-handle {
+  flex-shrink: 0;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  user-select: none;
+}
+.das-resize-handle:hover {
+  background: var(--n-color-overlay);
+}
+.das-right-resizable {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
 /* 移动端适配 */
 @media (max-width: 640px) {
   .das-page {
     height: calc(100vh - 80px);
+    margin: -6px -6px 0 -6px;
   }
   
   .das-right-container {
@@ -2767,6 +3049,101 @@ onUnmounted(() => {
 }
 .das-empty-holder {
   padding: 32px 0;
+}
+/* 执行中 loading：顶部无限进度条 + 跳动点 + 骨架屏（使用固定色保证动画可见） */
+.das-executing-wrap {
+  min-height: 200px;
+  background: var(--n-color, #fff);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.das-executing-simple {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 16px;
+}
+.das-executing-text {
+  font-size: 13px;
+  color: var(--n-text-color-2, #666);
+}
+.das-executing-bar {
+  height: 4px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    #18a058 40%,
+    #36ad6a 50%,
+    #18a058 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: das-executing-bar 1.2s linear infinite;
+}
+@keyframes das-executing-bar {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.das-executing-body {
+  padding: 20px 16px;
+}
+.das-executing-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--n-text-color-2, #666);
+  margin-bottom: 16px;
+}
+.das-executing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.das-executing-dots .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #18a058;
+  flex-shrink: 0;
+  animation: das-executing-bounce 0.6s ease-in-out infinite both;
+}
+.das-executing-dots .dot:nth-child(2) { animation-delay: 0.15s; }
+.das-executing-dots .dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes das-executing-bounce {
+  0%, 60%, 100% { transform: scale(0.65); opacity: 0.6; }
+  30% { transform: scale(1.1); opacity: 1; }
+}
+.das-executing-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.das-executing-skeleton .skeleton-row {
+  height: 22px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    #e8e8e8 0%,
+    #f5f5f5 25%,
+    #e0e0e0 50%,
+    #f5f5f5 75%,
+    #e8e8e8 100%
+  );
+  background-size: 200% 100%;
+  animation: das-executing-shimmer 1.5s ease-in-out infinite;
+}
+.das-executing-skeleton .skeleton-row:nth-child(1) { width: 100%; }
+.das-executing-skeleton .skeleton-row:nth-child(2) { width: 96%; }
+.das-executing-skeleton .skeleton-row:nth-child(3) { width: 98%; }
+.das-executing-skeleton .skeleton-row:nth-child(4) { width: 94%; }
+.das-executing-skeleton .skeleton-row:nth-child(5) { width: 99%; }
+.das-executing-skeleton .skeleton-row:nth-child(6) { width: 92%; }
+@keyframes das-executing-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 .das-hint {
   font-size: 12px;

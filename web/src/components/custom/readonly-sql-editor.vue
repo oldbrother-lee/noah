@@ -141,7 +141,7 @@ const initEditor = () => {
         '.cm-editor': {
           borderRadius: '4px',
           border: '1px solid var(--n-border-color)',
-          height: '100%',
+          minHeight: '100%', // 至少占满容器，内容多时可撑高，由外层容器滚动
           display: 'flex',
           flexDirection: 'column',
           backgroundColor: 'var(--n-color)',
@@ -151,9 +151,10 @@ const initEditor = () => {
           fontFamily: 'v-mono, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
           fontSize: '14px',
           lineHeight: '1.6',
-          overflow: 'auto', // 启用滚动
-          flex: '1 1 auto', // 允许滚动区域伸缩
-          minHeight: '0' // 允许收缩
+          overflowY: 'auto', // 内容超出时垂直滚动
+          overflowX: 'auto', // 长行可横向滚动
+          flex: '1 1 auto',
+          minHeight: '0'
         },
         // 行号区域样式
         '.cm-gutters': {
@@ -312,10 +313,11 @@ defineExpose({
 }
 
 .editor-container {
-  position: relative; /* 为CodeMirror提供定位上下文 */
+  position: relative;
   width: 100%;
   max-width: 100%;
-  overflow: hidden; /* 防止CodeMirror撑开容器 */
+  max-height: 100%;
+  overflow: auto; /* 内容超出时可滚动查看 */
   transition: height 0.2s ease;
 }
 

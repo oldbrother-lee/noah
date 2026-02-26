@@ -47,7 +47,10 @@ func (r *InsightRepository) GetOrders(ctx context.Context, params *OrderQueryPar
 	if params.DBType != "" {
 		query = query.Where("a.db_type = ?", params.DBType)
 	}
-	if params.Title != "" {
+	if params.Search != "" {
+		searchLike := "%" + params.Search + "%"
+		query = query.Where("(a.title LIKE ? OR a.applicant LIKE ?)", searchLike, searchLike)
+	} else if params.Title != "" {
 		query = query.Where("a.title LIKE ?", "%"+params.Title+"%")
 	}
 
@@ -68,7 +71,10 @@ func (r *InsightRepository) GetOrders(ctx context.Context, params *OrderQueryPar
 	if params.DBType != "" {
 		countQuery = countQuery.Where("db_type = ?", params.DBType)
 	}
-	if params.Title != "" {
+	if params.Search != "" {
+		searchLike := "%" + params.Search + "%"
+		countQuery = countQuery.Where("(title LIKE ? OR applicant LIKE ?)", searchLike, searchLike)
+	} else if params.Title != "" {
 		countQuery = countQuery.Where("title LIKE ?", "%"+params.Title+"%")
 	}
 	if err := countQuery.Count(&total).Error; err != nil {
@@ -94,6 +100,7 @@ type OrderQueryParams struct {
 	SQLType     string
 	DBType      string
 	Title       string
+	Search      string // 关键词：匹配工单标题或申请人
 }
 
 // GetOrderByID 根据OrderID获取工单（包含实例名称和环境名称）

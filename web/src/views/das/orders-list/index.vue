@@ -19,7 +19,7 @@ const initialSearchParams: Api.Orders.OrderSearchParams = {
   current: 1,
   size: 10,
   environment: null,
-  status: null,
+  progress: null,
   search: null,
   only_my_orders: 0
 };
@@ -95,7 +95,7 @@ function handleReset() {
   updateSearchParams({
     only_my_orders: 0,
     environment: null,
-    status: null,
+    progress: null,
     search: null
   });
   getDataByPage();
@@ -171,13 +171,13 @@ const { columns, data, getData, getDataByPage, loading, mobilePagination, search
     };
   },
   columns: () => [
-    {
-      key: 'order_id',
-      title: '工单编号',
-      align: 'center',
-      width: 320,
-      ellipsis: { tooltip: true }
-    },
+    // {
+    //   key: 'order_id',
+    //   title: '工单编号',
+    //   align: 'center',
+    //   width: 320,
+    //   ellipsis: { tooltip: true }
+    // },
     {
       key: 'progress',
       title: '进度',

@@ -14,7 +14,7 @@ const columns = defineModel<NaiveUI.TableColumnCheck[]>('columns', {
 <template>
   <NPopover placement="bottom-end" trigger="click">
     <template #trigger>
-      <NButton size="small">
+      <NButton size="tiny">
         <template #icon>
           <icon-ant-design-setting-outlined class="text-icon" />
         </template>

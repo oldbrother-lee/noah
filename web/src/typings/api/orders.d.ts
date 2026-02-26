@@ -85,8 +85,8 @@ declare namespace Api {
     type CommonSearchParams = Pick<Api.Common.PaginatingCommonParams, 'current' | 'size'>;
 
     interface OrderSearchParams extends CommonSearchParams {
-      environment?: string | null;
-      status?: string | null;
+      environment?: number | null;
+      progress?: string | null;
       search?: string | null;
       only_my_orders?: number;
     }

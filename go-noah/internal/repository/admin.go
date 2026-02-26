@@ -80,8 +80,11 @@ func (r *AdminRepository) UpdateUserRoles(ctx context.Context, uid uint, roles [
 		}
 	}
 
-	_, err = r.e.AddRolesForUser(convertor.ToString(uid), addRoles)
-	return err
+	if len(addRoles) > 0 {
+		_, err = r.e.AddRolesForUser(convertor.ToString(uid), addRoles)
+		return err
+	}
+	return nil
 }
 
 func (r *AdminRepository) GetAdminUserByUsername(ctx context.Context, username string) (model.AdminUser, error) {

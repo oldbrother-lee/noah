@@ -15,7 +15,7 @@ interface Props {
   showPadding?: boolean;
 }
 
-withDefaults(defineProps<Props>(), {
+const props = withDefaults(defineProps<Props>(), {
   showPadding: true
 });
 
@@ -25,6 +25,16 @@ const routeStore = useRouteStore();
 const tabStore = useTabStore();
 
 const transitionName = computed(() => (themeStore.page.animate ? themeStore.page.animateMode : ''));
+
+/** 内容区内边距：SQL 查询页右侧缩小，其余页面 p-16px */
+function contentPaddingClass(route: { name?: string; path?: string }) {
+  if (!props.showPadding) return '';
+  const isDasEdit = route.name === 'das_edit' || route.path === '/das/edit';
+  if (isDasEdit) {
+    return 'pl-16px pt-16px pr-8px pb-16px';
+  }
+  return 'p-16px';
+}
 
 function resetScroll() {
   const el = document.querySelector(`#${LAYOUT_SCROLL_EL_ID}`);
@@ -47,7 +57,7 @@ function resetScroll() {
           :is="Component"
           v-if="appStore.reloadFlag"
           :key="tabStore.getTabIdByRoute(route)"
-          :class="{ 'p-16px': showPadding }"
+          :class="contentPaddingClass(route)"
           class="flex-grow bg-layout transition-300"
         />
       </KeepAlive>
