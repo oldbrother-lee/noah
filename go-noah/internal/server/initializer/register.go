@@ -22,6 +22,9 @@ func RegisterAll(logger *log.Logger, enforcer *casbin.SyncedEnforcer) {
 	// 注册 Inspect 初始化器
 	Register(NewInspectInitializer(logger))
 
+	// 注册 Insight 初始化器（DAS 等功能的基础数据）
+	Register(NewInsightInitializer(logger))
+
 	// TODO: 注册其他初始化器
 	// Register(NewAPIInitializer(logger))
 	// Register(NewFlowInitializer(logger))

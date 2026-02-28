@@ -17,7 +17,10 @@ import (
 	"go-noah/pkg/global"
 	"go-noah/pkg/notifier"
 	"go-noah/pkg/utils"
+	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -1400,6 +1403,107 @@ func (h *OrderHandler) GetTaskRollbackSQL(c *gin.Context) {
 	api.HandleSuccess(c, gin.H{
 		"rollback_sql": rollbackSQL,
 	})
+}
+
+// DownloadExportFile 下载导出工单生成的文件（从服务器本地读取并下发给浏览器）
+// @Summary 下载导出文件
+// @Tags 工单管理
+// @Security Bearer
+// @Param task_id path string true "任务ID"
+// @Success 200 file "文件流"
+// @Router /api/v1/insight/orders/download/{task_id} [get]
+func (h *OrderHandler) DownloadExportFile(c *gin.Context) {
+	taskID := c.Param("task_id")
+	if taskID == "" {
+		api.HandleError(c, http.StatusBadRequest, api.ErrBadRequest, nil)
+		return
+	}
+
+	task, err := service.InsightServiceApp.GetTaskByID(c.Request.Context(), taskID)
+	if err != nil {
+		api.HandleError(c, http.StatusNotFound, err, nil)
+		return
+	}
+
+	if task.SQLType != insight.SQLTypeExport {
+		api.HandleError(c, http.StatusBadRequest, fmt.Errorf("该任务不是导出任务"), nil)
+		return
+	}
+
+	order, err := service.InsightServiceApp.GetOrderByID(c.Request.Context(), task.OrderID.String())
+	if err != nil {
+		api.HandleError(c, http.StatusNotFound, err, nil)
+		return
+	}
+
+	// 仅申请人可下载导出文件（admin 除外）
+	userId := handler.GetUserIdFromCtx(c)
+	isAdmin := userId == 1
+	if !isAdmin {
+		uidStr := strconv.FormatUint(uint64(userId), 10)
+		roles, _ := global.Enforcer.GetRolesForUser(uidStr)
+		for _, role := range roles {
+			if role == model.AdminRole {
+				isAdmin = true
+				break
+			}
+		}
+	}
+	if !isAdmin {
+		username := ""
+		if userId > 0 {
+			if user, err := service.AdminServiceApp.GetAdminUser(c, userId); err == nil {
+				username = user.Username
+			}
+		}
+		if username == "" || username != order.Applicant {
+			api.HandleError(c, http.StatusForbidden, api.ErrForbidden, nil)
+			return
+		}
+	}
+
+	if len(task.Result) == 0 {
+		api.HandleError(c, http.StatusNotFound, fmt.Errorf("任务尚未执行完成或无导出文件"), nil)
+		return
+	}
+
+	var result struct {
+		FilePath    string `json:"file_path"`
+		FileName    string `json:"file_name"`
+		ContentType string `json:"content_type"`
+	}
+	if err := json.Unmarshal(task.Result, &result); err != nil {
+		api.HandleError(c, http.StatusInternalServerError, fmt.Errorf("解析任务结果失败"), nil)
+		return
+	}
+	if result.FilePath == "" {
+		api.HandleError(c, http.StatusNotFound, fmt.Errorf("未找到导出文件路径"), nil)
+		return
+	}
+
+	f, err := os.Open(result.FilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			api.HandleError(c, http.StatusNotFound, fmt.Errorf("导出文件不存在或已被清理"), nil)
+			return
+		}
+		api.HandleError(c, http.StatusInternalServerError, err, nil)
+		return
+	}
+	defer f.Close()
+
+	dispName := result.FileName
+	if dispName == "" {
+		dispName = "export.csv"
+	}
+	c.Header("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(dispName))
+	if result.ContentType != "" {
+		c.Header("Content-Type", result.ContentType)
+	} else {
+		c.Header("Content-Type", "text/csv; charset=utf-8")
+	}
+	c.Status(http.StatusOK)
+	io.Copy(c.Writer, f)
 }
 
 // UpdateTaskProgressRequest 更新任务进度请求

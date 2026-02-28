@@ -155,9 +155,9 @@ func (h *InspectHandler) InspectSQL(c *gin.Context) {
 		}
 	}
 
-	// 导出工单和 ClickHouse 不审核
+	// 导出工单和 ClickHouse 不审核，返回与 DDL/DML 一致的形状便于前端统一解析
 	if req.SQLType == "EXPORT" || req.DBType == "ClickHouse" {
-		api.HandleSuccess(c, []interface{}{})
+		api.HandleSuccess(c, gin.H{"status": 0, "data": []interface{}{}})
 		return
 	}
 

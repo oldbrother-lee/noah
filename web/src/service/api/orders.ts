@@ -95,6 +95,7 @@ export function fetchCreateOrder(data: Api.Orders.CreateOrderRequest) {
   return request<Api.Orders.Order>({
     url: '/api/v1/insight/orders',
     method: 'post',
+    timeout: 1 * 60 * 60 * 1000,
     data
   });
 }
@@ -128,7 +129,7 @@ export function fetchOrderDetail(id: string) {
   return request<Api.Orders.OrderDetail>({
     url: `/api/v1/insight/orders/${id}`,
     method: 'get',
-    timeout: 120 * 1000
+    timeout: 300 * 1000
   });
 }
 
@@ -138,6 +139,7 @@ export function fetchOrderDetail(id: string) {
 export function fetchOpLogs(params?: Record<string, any>) {
   return request<Api.Orders.OpLog[]>({
     url: `/api/v1/insight/orders/${params?.order_id}/logs`,
+    timeout: 1 * 60 * 60 * 1000,
     method: 'get'
   });
 }
@@ -182,6 +184,7 @@ export function fetchApproveOrder(data: {
   return request({
     url: '/api/v1/insight/orders/approve',
     method: 'post',
+    timeout: 1 * 60 * 60 * 1000,
     data
   });
 }
@@ -258,6 +261,7 @@ export function fetchGenerateTasks(data: Api.Orders.GenerateTasksRequest) {
 export function fetchTasks(params: { order_id: string }) {
   return request<Api.Orders.Task[]>({
     url: `/api/v1/insight/orders/${params.order_id}/tasks`,
+    timeout: 300 * 1000,
     method: 'get'
   });
 }

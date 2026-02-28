@@ -63,6 +63,7 @@ var ApiSeedData = []ApiSeedItem{
 	{Group: "数据库服务", Name: "获取工单执行日志", Path: "/v1/insight/orders/:order_id/logs", Method: "GET"},
 	{Group: "数据库服务", Name: "获取任务信息", Path: "/v1/insight/orders/:order_id/tasks", Method: "GET"},
 	{Group: "数据库服务", Name: "获取回滚语句", Path: "/v1/insight/orders/:order_id/tasks/:task_id/rollback-sql", Method: "GET"},
+	{Group: "数据库服务", Name: "下载导出文件", Path: "/v1/insight/orders/download/:task_id", Method: "GET"},
 	{Group: "数据库服务", Name: "获取我的工单", Path: "/v1/insight/orders/my", Method: "GET"},
 	{Group: "数据库服务", Name: "获取工单场景的表列表", Path: "/v1/insight/orders/tables/:instance_id/:schema", Method: "GET"},
 	{Group: "数据库管理", Name: "创建角色权限", Path: "/v1/insight/das/permissions/roles", Method: "POST"},

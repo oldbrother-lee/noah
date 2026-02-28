@@ -86,6 +86,7 @@ func InitInsightRouter(r gin.IRouter, jwt *jwt.JWT, e *casbin.SyncedEnforcer, lo
 			// ============ 工单管理 ============
 			authRouter.GET("/orders", insight.OrderHandlerApp.GetOrders)
 			authRouter.GET("/orders/my", insight.OrderHandlerApp.GetMyOrders)
+			authRouter.GET("/orders/download/:task_id", insight.OrderHandlerApp.DownloadExportFile)        // 下载导出文件（需在 /orders/:order_id 前注册）
 			authRouter.GET("/orders/:order_id", insight.OrderHandlerApp.GetOrder)
 			authRouter.POST("/orders", insight.OrderHandlerApp.CreateOrder)
 			authRouter.POST("/orders/check-ddl", insight.OrderHandlerApp.CheckDDL)                       // DDL 预检：检查表是否有主键/唯一键（语法检查时调用）

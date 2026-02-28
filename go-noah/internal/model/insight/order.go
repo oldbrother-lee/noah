@@ -80,7 +80,7 @@ type OrderRecord struct {
 	ExecuteResult       string           `gorm:"type:varchar(32);default:'';comment:执行结果(success,error,warning)" json:"execute_result"`
 	ScheduleTime        *time.Time       `gorm:"type:datetime;null;default:null;comment:计划执行时间" json:"schedule_time"`
 	FixVersion          string           `gorm:"type:varchar(128);not null;default:'';comment:上线版本;index" json:"fix_version"`
-	Content             string           `gorm:"type:text;null;comment:工单内容" json:"content"`
+	Content             string           `gorm:"type:longtext;null;comment:工单内容" json:"content"`
 	ExportFileFormat    ExportFileFormat `gorm:"type:varchar(10);default:'XLSX';comment:导出文件格式" json:"export_file_format"`
 	FlowInstanceID      uint             `gorm:"index;comment:'关联流程实例ID'" json:"flow_instance_id"`
 	GhostOkToDropTable  bool             `gorm:"type:tinyint(1);not null;default:0;comment:gh-ost执行成功后自动删除旧表" json:"ghost_ok_to_drop_table"`
@@ -118,7 +118,7 @@ type OrderTask struct {
 	DBType   DbType         `gorm:"type:varchar(20);default:'MySQL';comment:DB类型" json:"db_type"`
 	SQLType  SQLType        `gorm:"type:varchar(20);default:'DML';comment:SQL类型" json:"sql_type"`
 	Executor string         `gorm:"type:varchar(128);null;default:null;comment:任务执行人" json:"executor"`
-	SQL      string         `gorm:"type:text;null;comment:SQL语句" json:"sql"`
+	SQL      string         `gorm:"type:longtext;null;comment:SQL语句" json:"sql"`
 	Progress TaskProgress   `gorm:"type:varchar(20);default:'未执行';comment:进度" json:"progress"`
 	Result   datatypes.JSON `gorm:"type:json;null;default:null;comment:执行结果" json:"result"`
 }

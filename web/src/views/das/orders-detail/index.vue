@@ -42,7 +42,8 @@ import {
   fetchSyntaxCheck,
   fetchTaskRollbackSQL,
   fetchTasks,
-  fetchUpdateOrderSchedule
+  fetchUpdateOrderSchedule,
+  fetchDownloadExportFile
 } from '@/service/api/orders';
 import { useThemeStore } from '@/store/modules/theme';
 import { useAuthStore } from '@/store/modules/auth';
@@ -1086,6 +1087,24 @@ const resultColumns = computed<any[]>(() => [
         );
       }
 
+      // 导出工单：任务已完成时显示下载按钮
+      const isExportOrder = orderDetail.value?.sql_type === 'EXPORT';
+      if (isExportOrder && isTaskCompleted) {
+        buttons.push(
+          h(
+            NButton,
+            {
+              size: 'small',
+              type: 'primary',
+              secondary: true,
+              loading: downloadExportLoading.value === row.task_id,
+              onClick: () => handleDownloadExportFile(row.task_id)
+            },
+            { default: () => '下载' }
+          )
+        );
+      }
+
       return h(NSpace, { size: 'small' }, { default: () => buttons });
     }
   }
@@ -1782,6 +1801,37 @@ const doExecuteSingle = async (row: any) => {
     window.$message?.error(e?.message || '执行失败');
   } finally {
     executeLoading.value = false;
+  }
+};
+
+// 下载导出工单生成的文件
+const downloadExportLoading = ref<string | null>(null);
+const handleDownloadExportFile = async (taskId: string) => {
+  if (downloadExportLoading.value) return;
+  downloadExportLoading.value = taskId;
+  try {
+    const res: any = await fetchDownloadExportFile(taskId);
+    if (res.error) {
+      const msg = res.error?.response?.data?.message ?? res.error?.message ?? '下载失败';
+      window.$message?.error(msg);
+      return;
+    }
+    const blob = res.data;
+    if (!blob || !(blob instanceof Blob)) {
+      window.$message?.error('未获取到文件');
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `export_${taskId}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    window.$message?.success('下载已开始');
+  } catch (e: any) {
+    window.$message?.error(e?.message || '下载失败');
+  } finally {
+    downloadExportLoading.value = null;
   }
 };
 

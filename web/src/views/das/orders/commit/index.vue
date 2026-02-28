@@ -63,7 +63,7 @@ interface FormModel {
   environment?: number | null;
   instanceId?: string | null;  // UUID 字符串
   schema?: string | null;
-  exportFileFormat?: 'XLSX' | 'CSV';
+  exportFileFormat?: 'CSV';
   approver: string[]; // username list
   executor: string[]; // username list
   reviewer: string[]; // username list
@@ -82,7 +82,7 @@ const formModel = reactive<FormModel>({
   environment: null,
   instanceId: null,
   schema: null,
-  exportFileFormat: 'XLSX',
+  exportFileFormat: 'CSV',
   approver: [],
   executor: [],
   reviewer: [],
@@ -976,10 +976,8 @@ watch(
                   <NSelect
                     v-model:value="formModel.exportFileFormat"
                     :size="appStore.isMobile ? 'small' : 'medium'"
-                    :options="[
-                      { label: 'XLSX', value: 'XLSX' },
-                      { label: 'CSV', value: 'CSV' }
-                    ]"
+                    :options="[{ label: 'CSV', value: 'CSV' }]"
+                    disabled
                   />
                 </NFormItem>
                 <NFormItem v-if="isDMLOrder" label="是否回滚">

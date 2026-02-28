@@ -61,6 +61,7 @@ type DASRecord struct {
 	Duration   int64     `gorm:"type:bigint;comment:执行时长(ms)" json:"duration"`
 	RowCount   int64     `gorm:"type:bigint;comment:返回行数" json:"row_count"`
 	Error      string    `gorm:"type:text;comment:错误信息" json:"error"`
+	IsFinish   bool      `gorm:"type:boolean;default:false;comment:是否已完成,0未完成,1已完成" json:"is_finish"`
 }
 
 func (DASRecord) TableName() string {

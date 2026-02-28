@@ -26,7 +26,7 @@ func (r *InsightRepository) GetOrders(ctx context.Context, params *OrderQueryPar
 
 	// 使用 JOIN 查询，关联 db_configs 表获取实例名称，关联 db_environments 表获取环境名称，关联 admin_users 表获取申请人昵称
 	query := r.DB(ctx).Table("order_records a").
-		Select("a.*, CONCAT(COALESCE(b.hostname, ''), ':', COALESCE(b.port, 0)) as instance_name, COALESCE(c.name, '') as environment_name, COALESCE(d.nickname, '') as applicant_nickname").
+		Select("a.id,a.title,a.progress,a.environment,a.schema,a.order_id,a.sql_type,a.db_type,a.applicant,a.organization,a.approver,a.reviewer,a.cc,a.instance_id,a.created_at,a.updated_at, CONCAT(COALESCE(b.hostname, ''), ':', COALESCE(b.port, 0)) as instance_name, COALESCE(c.name, '') as environment_name, COALESCE(d.nickname, '') as applicant_nickname").
 		Joins("LEFT JOIN db_configs b ON a.instance_id = b.instance_id").
 		Joins("LEFT JOIN db_environments c ON a.environment = c.id").
 		Joins("LEFT JOIN admin_users d ON a.applicant = d.username")

@@ -3,12 +3,15 @@ package executor
 import (
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"go-noah/internal/inspect/parser"
 	mysqlpkg "go-noah/internal/orders/executor/mysql"
 	"go-noah/pkg/global"
 	"go-noah/pkg/utils"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,6 +20,9 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"go.uber.org/zap"
 )
+
+// ExportDir 导出文件存放目录（相对工作目录，可被环境变量 OVERRIDE_EXPORT_DIR 覆盖为绝对路径）
+var ExportDir = "storage/exports"
 
 // MySQLExecutor MySQL执行器
 type MySQLExecutor struct {
@@ -570,7 +576,7 @@ func (e *MySQLExecutor) ExecuteDML() (ReturnData, error) {
 	return data, nil
 }
 
-// ExecuteExport 执行数据导出
+// ExecuteExport 执行数据导出，将结果写入服务器本地 CSV 文件（XLSX 格式暂以 CSV 落盘，Excel 可直接打开）
 func (e *MySQLExecutor) ExecuteExport() (ReturnData, error) {
 	var data ReturnData
 	var executeLog []string
@@ -579,13 +585,11 @@ func (e *MySQLExecutor) ExecuteExport() (ReturnData, error) {
 		timestamp := time.Now().Format("2006-01-02 15:04:05")
 		logMsg := fmt.Sprintf("[%s] %s", timestamp, msg)
 		executeLog = append(executeLog, logMsg)
-		// 发布消息到 Redis（用于 WebSocket 推送）
 		if e.Config.OrderID != "" {
 			_ = utils.PublishMessageToChannel(e.Config.OrderID, logMsg, "")
 		}
 	}
 
-	// 连接数据库
 	logMessage(fmt.Sprintf("连接数据库 %s:%d...", e.Config.Hostname, e.Config.Port))
 	db, err := e.Connect()
 	if err != nil {
@@ -597,7 +601,6 @@ func (e *MySQLExecutor) ExecuteExport() (ReturnData, error) {
 	defer db.Close()
 	logMessage("连接成功")
 
-	// 执行查询
 	logMessage(fmt.Sprintf("执行查询: %s", truncateSQL(e.Config.SQL, 200)))
 	startTime := time.Now()
 
@@ -610,7 +613,6 @@ func (e *MySQLExecutor) ExecuteExport() (ReturnData, error) {
 	}
 	defer rows.Close()
 
-	// 获取列信息
 	columns, err := rows.Columns()
 	if err != nil {
 		logMessage(fmt.Sprintf("获取列信息失败: %s", err.Error()))
@@ -619,19 +621,106 @@ func (e *MySQLExecutor) ExecuteExport() (ReturnData, error) {
 		return data, err
 	}
 
-	// 统计行数
-	var rowCount int64
-	for rows.Next() {
-		rowCount++
+	// 导出目录：优先使用环境变量（绝对路径），否则为相对工作目录
+	dir := os.Getenv("OVERRIDE_EXPORT_DIR")
+	if dir == "" {
+		dir, _ = filepath.Abs(ExportDir)
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		logMessage(fmt.Sprintf("创建导出目录失败: %s", err.Error()))
+		data.ExecuteLog = strings.Join(executeLog, "\n")
+		data.Error = err.Error()
+		return data, err
 	}
 
-	executeCostTime := time.Since(startTime).String()
-	logMessage(fmt.Sprintf("查询成功，列数: %d，行数: %d，耗时: %s", len(columns), rowCount, executeCostTime))
+	// 文件名：export_订单ID_任务ID.csv（去掉 UUID 中的 - 便于作为文件名）
+	safeID := strings.ReplaceAll(e.Config.OrderID+"_"+e.Config.TaskID, "-", "_")
+	fileName := "export_" + safeID + ".csv"
+	filePath := filepath.Join(dir, fileName)
 
-	// TODO: 实际导出文件逻辑
+	f, err := os.Create(filePath)
+	if err != nil {
+		logMessage(fmt.Sprintf("创建导出文件失败: %s", err.Error()))
+		data.ExecuteLog = strings.Join(executeLog, "\n")
+		data.Error = err.Error()
+		return data, err
+	}
+	defer f.Close()
+
+	// UTF-8 BOM，便于 Excel 正确识别中文
+	if _, err := f.Write([]byte("\xef\xbb\xbf")); err != nil {
+		data.ExecuteLog = strings.Join(executeLog, "\n")
+		data.Error = err.Error()
+		return data, err
+	}
+
+	w := csv.NewWriter(f)
+	if err := w.Write(columns); err != nil {
+		logMessage(fmt.Sprintf("写入表头失败: %s", err.Error()))
+		data.ExecuteLog = strings.Join(executeLog, "\n")
+		data.Error = err.Error()
+		os.Remove(filePath)
+		return data, err
+	}
+
+	colCount := len(columns)
+	vals := make([]interface{}, colCount)
+	valPtrs := make([]interface{}, colCount)
+	for i := range vals {
+		valPtrs[i] = &vals[i]
+	}
+
+	var rowCount int64
+	for rows.Next() {
+		if err := rows.Scan(valPtrs...); err != nil {
+			logMessage(fmt.Sprintf("读取行失败: %s", err.Error()))
+			data.ExecuteLog = strings.Join(executeLog, "\n")
+			data.Error = err.Error()
+			os.Remove(filePath)
+			return data, err
+		}
+		row := make([]string, colCount)
+		for i := range vals {
+			if vals[i] == nil {
+				row[i] = ""
+			} else if b, ok := vals[i].([]byte); ok {
+				// MySQL 驱动常返回 []byte，直接 fmt.Sprint 会变成 "[97 98 99]"，需转成 UTF-8 字符串
+				row[i] = string(b)
+			} else {
+				row[i] = fmt.Sprint(vals[i])
+			}
+		}
+		if err := w.Write(row); err != nil {
+			logMessage(fmt.Sprintf("写入行失败: %s", err.Error()))
+			data.ExecuteLog = strings.Join(executeLog, "\n")
+			data.Error = err.Error()
+			os.Remove(filePath)
+			return data, err
+		}
+		rowCount++
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		logMessage(fmt.Sprintf("刷新 CSV 失败: %s", err.Error()))
+		data.ExecuteLog = strings.Join(executeLog, "\n")
+		data.Error = err.Error()
+		os.Remove(filePath)
+		return data, err
+	}
+
+	info, _ := os.Stat(filePath)
+	executeCostTime := time.Since(startTime).String()
+	logMessage(fmt.Sprintf("导出成功，列数: %d，行数: %d，耗时: %s，文件: %s", len(columns), rowCount, executeCostTime, filePath))
+
 	data.ExportRows = rowCount
 	data.ExecuteCostTime = executeCostTime
 	data.ExecuteLog = strings.Join(executeLog, "\n")
+	data.FilePath = filePath
+	data.FileName = fileName
+	if info != nil {
+		data.FileSize = info.Size()
+	}
+	data.ContentType = "text/csv; charset=utf-8"
 	return data, nil
 }
 

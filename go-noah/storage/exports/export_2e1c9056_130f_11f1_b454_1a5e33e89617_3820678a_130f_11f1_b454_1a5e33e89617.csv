@@ -1,0 +1,15 @@
+﻿id,username,email,age,created_at,updated_at,status,salary,department,is_employee,phone1
+1,张三,zhangsan@example.com,28,2025-12-08 20:05:22,2025-12-08 20:05:22,active,8500.50,技术部,1,
+2,李四,lisi@example.com,32,2025-12-08 20:05:22,2025-12-08 20:05:22,active,9200.00,销售部,1,
+3,王五,wangwu@example.com,25,2025-12-08 20:05:22,2025-12-08 20:05:22,pending,7500.00,技术部,1,
+4,赵六,zhaoliu@example.com,40,2025-12-08 20:05:22,2025-12-08 20:05:22,inactive,12000.00,管理部,0,
+5,孙七,sunqi@example.com,29,2025-12-08 20:05:22,2025-12-08 20:05:22,active,8800.75,市场部,1,
+6,周八,zhouba@example.com,35,2025-12-08 20:05:22,2025-12-08 20:05:22,active,9500.00,销售部,1,
+7,吴九,wujiu@example.com,27,2025-12-08 20:05:22,2025-12-08 20:05:22,pending,8200.00,技术部,1,
+8,郑十,zhengshi@example.com,45,2025-12-08 20:05:22,2025-12-08 20:05:22,active,13000.00,管理部,1,
+9,刘一,liuyi@example.com,31,2025-12-08 20:05:22,2025-12-08 20:05:22,active,8900.50,市场部,1,
+10,陈二,chener@example.com,26,2025-12-08 20:05:22,2025-12-08 20:05:22,inactive,7800.00,销售部,0,
+11,john_doe,john@example.com,30,2024-01-15 10:00:00,2026-01-30 23:50:38,active,50000.00,Engineering,1,15801575903
+14,john_doe11,john@example.com,28,2026-02-02 10:56:52,2026-02-02 10:56:52,active,85000.50,Engineering,1,13800138001
+15,john_doe23,john@example.com,28,2026-02-02 10:57:49,2026-02-02 10:57:49,active,85000.50,Engineering,1,13800138001
+18,john_doe1123,john@example.com,28,2026-02-02 11:04:15,2026-02-02 11:04:15,active,85000.50,Engineering,1,13800138001

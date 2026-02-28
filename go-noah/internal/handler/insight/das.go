@@ -13,6 +13,7 @@ import (
 	"go-noah/internal/inspect/parser"
 	"go-noah/internal/model/insight"
 	"go-noah/internal/service"
+	"go-noah/pkg/global"
 	"net/http"
 	"strconv"
 	"strings"
@@ -92,10 +93,22 @@ func (h *DASHandler) ExecuteQuery(c *gin.Context) {
 		return
 	}
 
+	// 校验 SQL 语法、语句数量以及语句类型（基于 das_allowed_operations 白名单）
+	if err := h.validateQuerySQL(c.Request.Context(), req.SQLText); err != nil {
+		api.HandleError(c, http.StatusBadRequest, err, nil)
+		return
+	}
+
 	// 获取数据库配置
 	config, err := service.InsightServiceApp.GetDBConfigByInstanceID(c.Request.Context(), req.InstanceID)
 	if err != nil {
 		api.HandleError(c, http.StatusInternalServerError, err, nil)
+		return
+	}
+
+	// 并发限制：同一用户在同一实例同一库内，只允许一条查询在执行
+	if err := h.checkConcurrentRunning(c.Request.Context(), username, config.InstanceID, req.Schema); err != nil {
+		api.HandleError(c, http.StatusBadRequest, err, nil)
 		return
 	}
 
@@ -230,24 +243,37 @@ func (h *DASHandler) ExecuteQuery(c *gin.Context) {
 		Ctx:      ctx,
 	}
 
+	// 创建执行记录（标记为未完成），用于并发控制
+	record := &insight.DASRecord{
+		Username:   username,
+		InstanceID: config.InstanceID,
+		Schema:     req.Schema,
+		SQL:        req.SQLText,
+		IsFinish:   false,
+	}
+	if err := service.InsightServiceApp.CreateDASRecord(c.Request.Context(), record); err != nil {
+		api.HandleError(c, http.StatusInternalServerError, err, nil)
+		return
+	}
+
 	// 执行查询（使用重写后的 SQL）
 	startTime := time.Now()
 	columns, data, err := db.Query(rewriteSQL)
 	duration := time.Since(startTime).Milliseconds()
 
-	// 记录执行日志（保存原始 SQL 和重写后的 SQL）
-	record := &insight.DASRecord{
-		Username:   username,
-		InstanceID: config.InstanceID,
-		Schema:     req.Schema,
-		SQL:        req.SQLText, // 保存原始 SQL
-		Duration:   duration,
-		RowCount:   int64(len(data)),
+	// 更新执行记录（标记完成，记录耗时和行数）
+	updateFields := map[string]interface{}{
+		"duration":  duration,
+		"row_count": int64(len(data)),
+		"is_finish": true,
 	}
 	if err != nil {
-		record.Error = err.Error()
+		updateFields["error"] = err.Error()
 	}
-	_ = service.InsightServiceApp.CreateDASRecord(c.Request.Context(), record)
+	_ = global.DB.WithContext(c.Request.Context()).
+		Model(&insight.DASRecord{}).
+		Where("id = ?", record.ID).
+		Updates(updateFields)
 
 	if err != nil {
 		api.HandleError(c, http.StatusInternalServerError, err, nil)
@@ -262,6 +288,73 @@ func (h *DASHandler) ExecuteQuery(c *gin.Context) {
 		SQLText:    req.SQLText, // 原始 SQL
 		RewriteSQL: rewriteSQL,  // 重写后的 SQL
 	})
+}
+
+// validateQuerySQL 校验 DAS 查询接口中提交的 SQL：
+// 1) 语法必须可被 TiDB parser 正常解析
+// 2) 仅允许执行单条语句
+// 3) 语句类型必须在 das_allowed_operations 中被启用
+func (h *DASHandler) validateQuerySQL(ctx context.Context, sqlText string) error {
+	// 使用 inspect parser 解析 SQL
+	audit, _, err := parser.ParseSQL(sqlText)
+	if err != nil {
+		return fmt.Errorf("SQL语法解析错误:%s", err.Error())
+	}
+
+	// 必须至少解析出一条语句
+	if len(audit.TiStmt) == 0 {
+		return fmt.Errorf("未解析到有效的SQL语句")
+	}
+
+	// 每次仅允许执行一条语句
+	if len(audit.TiStmt) > 1 {
+		return fmt.Errorf("每次仅允许执行一条语句，当前语句数量:%d", len(audit.TiStmt))
+	}
+
+	// 提取语句类型（与老项目保持一致）
+	stmt := audit.TiStmt[0]
+	st := dasParser.StatementType{}
+	statementType := st.Extract(stmt)
+
+	// 在 das_allowed_operations 白名单中检查是否启用
+	var count int64
+	if err := global.DB.WithContext(ctx).
+		Model(&insight.DASAllowedOperation{}).
+		Where("name = ? AND is_enable = ?", statementType, true).
+		Count(&count).Error; err != nil {
+		return fmt.Errorf("检查语句类型失败: %w", err)
+	}
+
+	if count == 0 {
+		return fmt.Errorf("禁止执行`%s`类型的语句（当前语句不被允许或无法正确解析）", statementType)
+	}
+
+	return nil
+}
+
+// checkConcurrentRunning 判断当前用户在 max_execution_time 内是否在对当前实例当前库进行查询，如果有，禁止执行，防止并发
+func (h *DASHandler) checkConcurrentRunning(ctx context.Context, username string, instanceID uuid.UUID, schema string) error {
+	// 读取配置中的 max_execution_time（毫秒），默认 600000ms（10 分钟）
+	maxTime := global.Conf.GetUint64("das.max_execution_time")
+	if maxTime == 0 {
+		maxTime = 600000
+	}
+	threshold := time.Now().Add(-time.Duration(maxTime) * time.Millisecond)
+
+	var count int64
+	if err := global.DB.WithContext(ctx).
+		Model(&insight.DASRecord{}).
+		Where("username = ? AND instance_id = ? AND `schema` = ? AND is_finish = ?", username, instanceID, schema, false).
+		Where("created_at >= ?", threshold).
+		Count(&count).Error; err != nil {
+		return fmt.Errorf("检查并发执行状态失败: %w", err)
+	}
+
+	if count > 0 {
+		return fmt.Errorf("您有`%s`库的查询正在执行,请等待当前SQL执行完成或%ds后重试", schema, maxTime/1000)
+	}
+
+	return nil
 }
 
 // UserSchemaResult 用户授权的 schema 返回结构
